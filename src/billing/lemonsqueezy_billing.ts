@@ -7,15 +7,10 @@ import crypto from 'crypto';
 import { UserDB } from '../auth/user_db';
 import { logger } from '../reporting/logs';
 
-const LS_API_KEY = process.env.LEMONSQUEEZY_API_KEY || '';
-const LS_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID || '';
-const LS_VARIANT_ID = process.env.LEMONSQUEEZY_VARIANT_ID || '';  // monthly subscription variant
-const LS_WEBHOOK_SECRET = process.env.LEMONSQUEEZY_WEBHOOK_SECRET || '';
-
 const LS_API_BASE = 'https://api.lemonsqueezy.com/v1';
 
 export function isLemonSqueezyConfigured(): boolean {
-  return !!LS_API_KEY && !!LS_STORE_ID && !!LS_VARIANT_ID;
+  return !!(process.env.LEMONSQUEEZY_API_KEY) && !!(process.env.LEMONSQUEEZY_STORE_ID) && !!(process.env.LEMONSQUEEZY_VARIANT_ID);
 }
 
 /**
@@ -36,7 +31,7 @@ export async function createLSCheckoutSession(
     headers: {
       'Accept': 'application/vnd.api+json',
       'Content-Type': 'application/vnd.api+json',
-      'Authorization': `Bearer ${LS_API_KEY}`,
+      'Authorization': `Bearer ${process.env.LEMONSQUEEZY_API_KEY || ''}`,
     },
     body: JSON.stringify({
       data: {
@@ -51,8 +46,8 @@ export async function createLSCheckoutSession(
           },
         },
         relationships: {
-          store: { data: { type: 'stores', id: LS_STORE_ID } },
-          variant: { data: { type: 'variants', id: LS_VARIANT_ID } },
+          store: { data: { type: 'stores', id: process.env.LEMONSQUEEZY_STORE_ID || '' } },
+          variant: { data: { type: 'variants', id: process.env.LEMONSQUEEZY_VARIANT_ID || '' } },
         },
       },
     }),
@@ -78,12 +73,13 @@ export async function handleLSWebhook(
   userDb: UserDB,
 ): Promise<{ status: number; body: unknown }> {
   // Verify signature
-  if (LS_WEBHOOK_SECRET) {
+  const lsWebhookSecret = process.env.LEMONSQUEEZY_WEBHOOK_SECRET || '';
+  if (lsWebhookSecret) {
     const sig = req.headers['x-signature'] as string;
     if (!sig) {
       return { status: 400, body: { error: 'Missing webhook signature' } };
     }
-    const hmac = crypto.createHmac('sha256', LS_WEBHOOK_SECRET);
+    const hmac = crypto.createHmac('sha256', lsWebhookSecret);
     hmac.update(rawBody);
     const expected = hmac.digest('hex');
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {

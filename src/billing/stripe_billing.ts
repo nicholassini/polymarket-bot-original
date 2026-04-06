@@ -4,25 +4,23 @@ import http from 'http';
 import { UserDB } from '../auth/user_db';
 import { logger } from '../reporting/logs';
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
-const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID || '';       // monthly recurring price
 const SIGNUP_FEE_AMOUNT = Number(process.env.SIGNUP_FEE_CENTS || '4999'); // $49.99 default
 
 let stripe: Stripe | null = null;
 
 function getStripe(): Stripe {
-  if (!stripe) {
-    if (!STRIPE_SECRET_KEY) {
+  const key = process.env.STRIPE_SECRET_KEY || '';
+  if (!stripe || (stripe as any)._api?.key !== key) {
+    if (!key) {
       throw new Error('STRIPE_SECRET_KEY is not set');
     }
-    stripe = new (StripeConstructor as any)(STRIPE_SECRET_KEY) as Stripe;
+    stripe = new (StripeConstructor as any)(key) as Stripe;
   }
   return stripe;
 }
 
 export function isStripeConfigured(): boolean {
-  return !!STRIPE_SECRET_KEY && !!STRIPE_PRICE_ID;
+  return !!(process.env.STRIPE_SECRET_KEY) && !!(process.env.STRIPE_PRICE_ID);
 }
 
 /**
@@ -67,9 +65,10 @@ export async function createCheckoutSession(
   }
 
   // Monthly subscription
-  if (STRIPE_PRICE_ID) {
+  const priceId = process.env.STRIPE_PRICE_ID || '';
+  if (priceId) {
     lineItems.push({
-      price: STRIPE_PRICE_ID,
+      price: priceId,
       quantity: 1,
     });
   }
@@ -103,9 +102,9 @@ export async function handleWebhook(
 
   let event: any;
   try {
-    if (STRIPE_WEBHOOK_SECRET) {
+    if (process.env.STRIPE_WEBHOOK_SECRET) {
       const sig = req.headers['stripe-signature'] as string;
-      event = s.webhooks.constructEvent(rawBody, sig, STRIPE_WEBHOOK_SECRET);
+      event = s.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
     } else {
       event = JSON.parse(rawBody.toString());
     }

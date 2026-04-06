@@ -16,14 +16,10 @@ import crypto from 'crypto';
 import { UserDB } from '../auth/user_db';
 import { logger } from '../reporting/logs';
 
-const NP_API_KEY = process.env.NOWPAYMENTS_API_KEY || '';
-const NP_PUBLIC_KEY = process.env.NOWPAYMENTS_PUBLIC_KEY || '';
-const NP_PRICE_USD = Number(process.env.NOWPAYMENTS_PRICE_USD || '99');
-
 const NP_API_BASE = 'https://api.nowpayments.io/v1';
 
 export function isNowPaymentsConfigured(): boolean {
-  return !!NP_API_KEY;
+  return !!(process.env.NOWPAYMENTS_API_KEY);
 }
 
 /**
@@ -43,11 +39,11 @@ export async function createNPInvoice(
   const response = await fetch(`${NP_API_BASE}/invoice`, {
     method: 'POST',
     headers: {
-      'x-api-key': NP_API_KEY,
+      'x-api-key': process.env.NOWPAYMENTS_API_KEY || '',
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      price_amount: NP_PRICE_USD,
+      price_amount: Number(process.env.NOWPAYMENTS_PRICE_USD || '99'),
       price_currency: 'usd',
       order_id: userId,
       order_description: 'Polymarket Bot Pro — 1 Month',
@@ -84,14 +80,15 @@ export async function handleNPWebhook(
   }
 
   // Verify HMAC signature
-  if (NP_PUBLIC_KEY) {
+  const npPublicKey = process.env.NOWPAYMENTS_PUBLIC_KEY || '';
+  if (npPublicKey) {
     const receivedSig = req.headers['x-nowpayments-sig'] as string;
     if (!receivedSig) {
       return { status: 400, body: { error: 'Missing IPN signature' } };
     }
 
     const sortedPayload = JSON.stringify(payload, Object.keys(payload).sort());
-    const hmac = crypto.createHmac('sha512', NP_PUBLIC_KEY);
+    const hmac = crypto.createHmac('sha512', npPublicKey);
     hmac.update(sortedPayload);
     const expected = hmac.digest('hex');
 
