@@ -1197,6 +1197,13 @@ export class DashboardServer {
         return;
       }
 
+      if (path === '/api/admin/analytics' && method === 'GET') {
+        const days = parseInt(url.searchParams.get('days') || '30') || 30;
+        const data = this.userDb.getAnalyticsData(days);
+        json(res, 200, data);
+        return;
+      }
+
       if (path === '/api/admin/set-admin' && method === 'POST') {
         const body = await readBody(req);
         const targetId = String(body.userId ?? '');
@@ -1365,6 +1372,7 @@ export class DashboardServer {
 
     /* ─── Dashboard HTML ─── */
     if (path === '/dashboard') {
+      this.userDb.trackEvent('page_view', userId, { page: 'dashboard' });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(getDashboardHtml());
       return;
@@ -1430,6 +1438,7 @@ export class DashboardServer {
       }
 
       json(res, 201, { ok: true, wallets: created, message: `${created.length} paper trading bots deployed!` });
+      this.userDb.trackEvent('wallet_seed', userId, { count: created.length });
       return;
     }
 
@@ -1535,6 +1544,7 @@ export class DashboardServer {
       }
 
       json(res, 201, { ok: true, message: `Wallet "${walletId}" created (${mode}, ${strategy}, $${capital})` });
+      this.userDb.trackEvent('wallet_create', userId, { walletId, strategy, mode, capital });
       return;
     }
 
@@ -1553,6 +1563,7 @@ export class DashboardServer {
         this.userDb.unassignWallet(walletId);
         this.userDb.removeWalletConfig(walletId);
         userWalletIds.delete(walletId);
+        this.userDb.trackEvent('wallet_delete', userId, { walletId });
         json(res, 200, { ok: true, message: `Wallet "${walletId}" removed` });
       } else {
         json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
@@ -2053,6 +2064,7 @@ export class DashboardServer {
         }
 
         if (checkoutUrl) {
+          this.userDb.trackEvent('signup', user.id, { plan: planChoice, provider });
           // Set cookie so they're logged in after checkout
           res.writeHead(200, {
             'Set-Cookie': `token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 3600}`,
@@ -2067,6 +2079,7 @@ export class DashboardServer {
       const anyBillingConfigured = isStripeConfigured() || isLemonSqueezyConfigured() || isNowPaymentsConfigured();
       const status = anyBillingConfigured ? 'free' : 'active';
       this.userDb.updateSubscription(user.id, '', status);
+      this.userDb.trackEvent('signup', user.id, { plan: planChoice || 'free' });
       res.writeHead(200, {
         'Set-Cookie': `token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 3600}`,
         'Content-Type': 'application/json',
@@ -2100,6 +2113,7 @@ export class DashboardServer {
     }
 
     const token = signToken({ userId: user.id, email: user.email });
+    this.userDb.trackEvent('login', user.id);
     res.writeHead(200, {
       'Set-Cookie': `token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 3600}`,
       'Content-Type': 'application/json',
