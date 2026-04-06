@@ -17,7 +17,7 @@ import { UserDB } from '../auth/user_db';
 import { logger } from '../reporting/logs';
 
 const NP_API_KEY = process.env.NOWPAYMENTS_API_KEY || '';
-const NP_IPN_SECRET = process.env.NOWPAYMENTS_IPN_SECRET || '';
+const NP_PUBLIC_KEY = process.env.NOWPAYMENTS_PUBLIC_KEY || '';
 const NP_PRICE_USD = Number(process.env.NOWPAYMENTS_PRICE_USD || '99');
 
 const NP_API_BASE = 'https://api.nowpayments.io/v1';
@@ -84,14 +84,14 @@ export async function handleNPWebhook(
   }
 
   // Verify HMAC signature
-  if (NP_IPN_SECRET) {
+  if (NP_PUBLIC_KEY) {
     const receivedSig = req.headers['x-nowpayments-sig'] as string;
     if (!receivedSig) {
       return { status: 400, body: { error: 'Missing IPN signature' } };
     }
 
     const sortedPayload = JSON.stringify(payload, Object.keys(payload).sort());
-    const hmac = crypto.createHmac('sha512', NP_IPN_SECRET);
+    const hmac = crypto.createHmac('sha512', NP_PUBLIC_KEY);
     hmac.update(sortedPayload);
     const expected = hmac.digest('hex');
 

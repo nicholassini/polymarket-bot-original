@@ -218,6 +218,7 @@ program
     const engine = new Engine(config, walletManager, orderRouter);
     await engine.initialize();
     dashboardServer.setEngine(engine);
+    dashboardServer.restoreWallets();
     engine.start();
 
     writeState({ status: 'running', startedAt: new Date().toISOString() });

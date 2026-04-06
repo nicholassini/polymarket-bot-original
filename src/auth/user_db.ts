@@ -72,6 +72,23 @@ export class UserDB {
     if (!cols.some((c: any) => c.name === 'plan_tier')) {
       this.db.exec("ALTER TABLE users ADD COLUMN plan_tier TEXT NOT NULL DEFAULT 'free'");
     }
+
+    // Migration: wallet_configs table for persisting wallet state across restarts
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS wallet_configs (
+        wallet_id TEXT PRIMARY KEY,
+        user_id   TEXT NOT NULL REFERENCES users(id),
+        strategy  TEXT NOT NULL,
+        capital   REAL NOT NULL,
+        mode      TEXT NOT NULL DEFAULT 'PAPER',
+        max_position_size REAL,
+        max_exposure      REAL,
+        max_daily_loss    REAL,
+        max_open_trades   INTEGER,
+        max_drawdown      REAL,
+        created_at INTEGER NOT NULL
+      );
+    `);
   }
 
   async createUser(email: string, password: string): Promise<User> {
@@ -173,6 +190,44 @@ export class UserDB {
   getWalletOwner(walletId: string): string | null {
     const row = this.db.prepare('SELECT user_id FROM user_wallets WHERE wallet_id = ?').get(walletId) as any;
     return row ? row.user_id : null;
+  }
+
+  /** Persist a wallet config so it survives restarts */
+  saveWalletConfig(walletId: string, userId: string, strategy: string, capital: number, mode: string, riskLimits?: { maxPositionSize?: number; maxExposurePerMarket?: number; maxDailyLoss?: number; maxOpenTrades?: number; maxDrawdown?: number }): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO wallet_configs (wallet_id, user_id, strategy, capital, mode, max_position_size, max_exposure, max_daily_loss, max_open_trades, max_drawdown, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      walletId, userId, strategy, capital, mode,
+      riskLimits?.maxPositionSize ?? capital * 0.2,
+      riskLimits?.maxExposurePerMarket ?? capital * 0.3,
+      riskLimits?.maxDailyLoss ?? capital * 0.1,
+      riskLimits?.maxOpenTrades ?? 10,
+      riskLimits?.maxDrawdown ?? 0.2,
+      Date.now(),
+    );
+  }
+
+  /** Remove a persisted wallet config */
+  removeWalletConfig(walletId: string): void {
+    this.db.prepare('DELETE FROM wallet_configs WHERE wallet_id = ?').run(walletId);
+  }
+
+  /** Load all persisted wallet configs (for restoring on startup) */
+  getAllWalletConfigs(): Array<{ walletId: string; userId: string; strategy: string; capital: number; mode: string; maxPositionSize: number; maxExposure: number; maxDailyLoss: number; maxOpenTrades: number; maxDrawdown: number }> {
+    const rows = this.db.prepare('SELECT * FROM wallet_configs').all() as any[];
+    return rows.map(r => ({
+      walletId: r.wallet_id,
+      userId: r.user_id,
+      strategy: r.strategy,
+      capital: r.capital,
+      mode: r.mode,
+      maxPositionSize: r.max_position_size,
+      maxExposure: r.max_exposure,
+      maxDailyLoss: r.max_daily_loss,
+      maxOpenTrades: r.max_open_trades,
+      maxDrawdown: r.max_drawdown,
+    }));
   }
 
   private rowToUser(row: any): User {

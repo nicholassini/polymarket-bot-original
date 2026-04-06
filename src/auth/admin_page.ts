@@ -319,9 +319,9 @@ tr:hover td{background:var(--surface2)}
             <div class="hint">Your NOWPayments API key from the dashboard</div>
           </div>
           <div class="form-group">
-            <label>IPN Secret</label>
-            <input type="password" id="npIpnSecret" placeholder="your-ipn-secret" autocomplete="off">
-            <div class="hint">IPN callback secret for verifying payment notifications</div>
+            <label>Public Key</label>
+            <input type="password" id="npPublicKey" placeholder="your-public-key" autocomplete="off">
+            <div class="hint">Your NOWPayments Public Key from the dashboard</div>
           </div>
           <div class="form-group">
             <label>Price (USD)</label>
@@ -344,7 +344,7 @@ tr:hover td{background:var(--surface2)}
         <li>Create an account at <strong>nowpayments.io</strong></li>
         <li>Go to <strong>Store Settings → API Keys</strong> and create an API key</li>
         <li>Go to <strong>Store Settings → IPN</strong> and set callback URL: <code style="background:var(--bg);padding:2px 6px;border-radius:4px">https://yourdomain.com/api/billing/nowpayments/webhook</code></li>
-        <li>Copy the <strong>IPN Secret</strong> from the IPN settings page</li>
+        <li>Copy the <strong>Public Key</strong> from the API Keys page</li>
         <li>Enter all values above and click <strong>Save NOWPayments Settings</strong></li>
       </ol>
     </div>
@@ -515,7 +515,7 @@ async function loadAdminData() {
     // NOWPayments form
     if (data.nowPayments) {
       document.getElementById('npApiKey').value = data.nowPayments.apiKey;
-      document.getElementById('npIpnSecret').value = data.nowPayments.ipnSecret;
+      document.getElementById('npPublicKey').value = data.nowPayments.publicKey;
       document.getElementById('npPriceUsd').value = data.nowPayments.priceUsd;
     }
     const npAlertEl = document.getElementById('npAlert');
@@ -526,7 +526,7 @@ async function loadAdminData() {
     }
 
     // Env table (editable)
-    const secretKeys = new Set(['POLYMARKET_API_KEY','JWT_SECRET','STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET','LEMONSQUEEZY_API_KEY','LEMONSQUEEZY_WEBHOOK_SECRET','NOWPAYMENTS_API_KEY','NOWPAYMENTS_IPN_SECRET']);
+    const secretKeys = new Set(['POLYMARKET_API_KEY','JWT_SECRET','STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET','LEMONSQUEEZY_API_KEY','LEMONSQUEEZY_WEBHOOK_SECRET','NOWPAYMENTS_API_KEY','NOWPAYMENTS_PUBLIC_KEY']);
     const envBody = document.getElementById('envTable');
     envBody.innerHTML = data.env.map(e => {
       const isSecret = secretKeys.has(e.key);
@@ -649,7 +649,7 @@ document.getElementById('npForm').addEventListener('submit', async (e) => {
       method: 'POST',
       body: JSON.stringify({
         apiKey: document.getElementById('npApiKey').value.trim(),
-        ipnSecret: document.getElementById('npIpnSecret').value.trim(),
+        publicKey: document.getElementById('npPublicKey').value.trim(),
         priceUsd: document.getElementById('npPriceUsd').value.trim(),
       }),
     });

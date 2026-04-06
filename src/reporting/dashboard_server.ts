@@ -732,6 +732,48 @@ export class DashboardServer {
     this.engine = engine;
   }
 
+  /** Restore all persisted wallet configs from the DB after restart */
+  restoreWallets(): void {
+    if (!this.engine) {
+      console.warn('[DashboardServer] restoreWallets called but engine not set — skipping');
+      return;
+    }
+
+    const configs = this.userDb.getAllWalletConfigs();
+    let restored = 0;
+
+    for (const cfg of configs) {
+      // Skip if already loaded (e.g. from config.yaml)
+      if (this.walletManager.listWallets().find((w) => w.walletId === cfg.walletId)) continue;
+
+      const walletConfig = {
+        id: cfg.walletId,
+        mode: cfg.mode === 'LIVE' ? 'LIVE' as const : 'PAPER' as const,
+        strategy: cfg.strategy,
+        capital: cfg.capital,
+        riskLimits: {
+          maxPositionSize: cfg.maxPositionSize,
+          maxExposurePerMarket: cfg.maxExposure,
+          maxDailyLoss: cfg.maxDailyLoss,
+          maxOpenTrades: cfg.maxOpenTrades,
+          maxDrawdown: cfg.maxDrawdown,
+        },
+      };
+
+      const wallet = cfg.mode === 'LIVE'
+        ? new PolymarketWallet(walletConfig, cfg.strategy)
+        : new PaperWallet(walletConfig, cfg.strategy);
+
+      this.walletManager.addWallet(wallet);
+      this.engine.addRunner(cfg.walletId, cfg.strategy);
+      restored++;
+    }
+
+    if (restored > 0) {
+      console.log(`[DashboardServer] Restored ${restored} wallet(s) from database`);
+    }
+  }
+
   /** Build a live price map from the orderbook stream cache */
   private getLiveMarketPrices(): Map<string, number> {
     const prices = new Map<string, number>();
@@ -1052,7 +1094,7 @@ export class DashboardServer {
           { key: 'LEMONSQUEEZY_VARIANT_ID', display: process.env.LEMONSQUEEZY_VARIANT_ID || '', set: !!process.env.LEMONSQUEEZY_VARIANT_ID },
           { key: 'LEMONSQUEEZY_WEBHOOK_SECRET', display: process.env.LEMONSQUEEZY_WEBHOOK_SECRET ? '••••' + process.env.LEMONSQUEEZY_WEBHOOK_SECRET.slice(-4) : '', set: !!process.env.LEMONSQUEEZY_WEBHOOK_SECRET },
           { key: 'NOWPAYMENTS_API_KEY', display: process.env.NOWPAYMENTS_API_KEY ? '••••' + process.env.NOWPAYMENTS_API_KEY.slice(-4) : '', set: !!process.env.NOWPAYMENTS_API_KEY },
-          { key: 'NOWPAYMENTS_IPN_SECRET', display: process.env.NOWPAYMENTS_IPN_SECRET ? '••••' + process.env.NOWPAYMENTS_IPN_SECRET.slice(-4) : '', set: !!process.env.NOWPAYMENTS_IPN_SECRET },
+          { key: 'NOWPAYMENTS_PUBLIC_KEY', display: process.env.NOWPAYMENTS_PUBLIC_KEY ? '••••' + process.env.NOWPAYMENTS_PUBLIC_KEY.slice(-4) : '', set: !!process.env.NOWPAYMENTS_PUBLIC_KEY },
           { key: 'NOWPAYMENTS_PRICE_USD', display: process.env.NOWPAYMENTS_PRICE_USD || '99', set: !!process.env.NOWPAYMENTS_PRICE_USD },
         ];
 
@@ -1080,7 +1122,7 @@ export class DashboardServer {
           },
           nowPayments: {
             apiKey: process.env.NOWPAYMENTS_API_KEY ? '••••' + process.env.NOWPAYMENTS_API_KEY.slice(-4) : '',
-            ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET ? '••••' + process.env.NOWPAYMENTS_IPN_SECRET.slice(-4) : '',
+            publicKey: process.env.NOWPAYMENTS_PUBLIC_KEY ? '••••' + process.env.NOWPAYMENTS_PUBLIC_KEY.slice(-4) : '',
             priceUsd: Number(process.env.NOWPAYMENTS_PRICE_USD || '99'),
           },
           env: envVars,
@@ -1193,7 +1235,7 @@ export class DashboardServer {
 
         const updates: Record<string, string> = {};
         if (body.apiKey && typeof body.apiKey === 'string' && !body.apiKey.startsWith('••••')) updates['NOWPAYMENTS_API_KEY'] = body.apiKey;
-        if (body.ipnSecret && typeof body.ipnSecret === 'string' && !body.ipnSecret.startsWith('••••')) updates['NOWPAYMENTS_IPN_SECRET'] = body.ipnSecret;
+        if (body.publicKey && typeof body.publicKey === 'string' && !body.publicKey.startsWith('••••')) updates['NOWPAYMENTS_PUBLIC_KEY'] = body.publicKey;
         if (body.priceUsd !== undefined && body.priceUsd !== '') updates['NOWPAYMENTS_PRICE_USD'] = String(Number(body.priceUsd) || 99);
 
         for (const [key, val] of Object.entries(updates)) {
@@ -1219,7 +1261,7 @@ export class DashboardServer {
           'ENABLE_LIVE_TRADING', 'POLYMARKET_API_KEY', 'DASHBOARD_PORT', 'JWT_SECRET',
           'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID', 'SIGNUP_FEE_CENTS',
           'LEMONSQUEEZY_API_KEY', 'LEMONSQUEEZY_WEBHOOK_SECRET', 'LEMONSQUEEZY_STORE_ID', 'LEMONSQUEEZY_VARIANT_ID',
-          'NOWPAYMENTS_API_KEY', 'NOWPAYMENTS_IPN_SECRET', 'NOWPAYMENTS_PRICE_USD',
+          'NOWPAYMENTS_API_KEY', 'NOWPAYMENTS_PUBLIC_KEY', 'NOWPAYMENTS_PRICE_USD',
         ]);
 
         const fs = require('fs');
@@ -1323,6 +1365,7 @@ export class DashboardServer {
         const wallet = new PaperWallet(walletConfig, sw.strategy);
         this.walletManager.addWallet(wallet);
         this.userDb.assignWallet(sw.id, userId);
+        this.userDb.saveWalletConfig(sw.id, userId, sw.strategy, sw.capital, 'PAPER', walletConfig.riskLimits);
         userWalletIds.add(sw.id);
         if (this.engine) this.engine.addRunner(sw.id, sw.strategy);
         created.push(sw.id);
@@ -1425,6 +1468,7 @@ export class DashboardServer {
 
       /* Associate wallet with the authenticated user */
       this.userDb.assignWallet(walletId, userId);
+      this.userDb.saveWalletConfig(walletId, userId, strategy, capital, mode, walletConfig.riskLimits);
       userWalletIds.add(walletId);
 
       /* Connect the new wallet to the engine so its strategy runs */
@@ -1449,6 +1493,7 @@ export class DashboardServer {
       const removed = this.walletManager.removeWallet(walletId);
       if (removed) {
         this.userDb.unassignWallet(walletId);
+        this.userDb.removeWalletConfig(walletId);
         userWalletIds.delete(walletId);
         json(res, 200, { ok: true, message: `Wallet "${walletId}" removed` });
       } else {
