@@ -884,7 +884,11 @@ export class DashboardServer {
 
     if (path === '/checkout') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(getCheckoutHtml());
+      res.end(getCheckoutHtml({
+        stripe: isStripeConfigured(),
+        lemonSqueezy: isLemonSqueezyConfigured(),
+        nowPayments: isNowPaymentsConfigured(),
+      }));
       return;
     }
 

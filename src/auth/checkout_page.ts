@@ -2,7 +2,12 @@
  * Checkout page — served at `/checkout`.
  * Collects account info and processes payment via the signup + Stripe flow.
  */
-export function getCheckoutHtml(): string {
+export function getCheckoutHtml(providers?: { stripe?: boolean; lemonSqueezy?: boolean; nowPayments?: boolean }): string {
+  const p = providers ?? {};
+  const stripeOn = !!p.stripe;
+  const lsOn = !!p.lemonSqueezy;
+  const npOn = !!p.nowPayments;
+  const firstProvider = stripeOn ? 'stripe' : lsOn ? 'lemonsqueezy' : npOn ? 'nowpayments' : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -177,30 +182,30 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
         <div class="divider"></div>
         <p class="divider-label">Choose Payment Method</p>
         <div class="payment-methods">
-          <label class="pm-option selected" data-provider="stripe">
-            <input type="radio" name="provider" value="stripe" checked>
+          ${stripeOn ? `<label class="pm-option${firstProvider === 'stripe' ? ' selected' : ''}" data-provider="stripe">
+            <input type="radio" name="provider" value="stripe"${firstProvider === 'stripe' ? ' checked' : ''}>
             <div class="pm-icon">💳</div>
             <div class="pm-label">
               <strong>Card (Stripe)</strong>
               <span>Visa, Mastercard, etc.</span>
             </div>
-          </label>
-          <label class="pm-option" data-provider="lemonsqueezy">
-            <input type="radio" name="provider" value="lemonsqueezy">
+          </label>` : ''}
+          ${lsOn ? `<label class="pm-option${firstProvider === 'lemonsqueezy' ? ' selected' : ''}" data-provider="lemonsqueezy">
+            <input type="radio" name="provider" value="lemonsqueezy"${firstProvider === 'lemonsqueezy' ? ' checked' : ''}>
             <div class="pm-icon">🍋</div>
             <div class="pm-label">
               <strong>Lemon Squeezy</strong>
               <span>Card, PayPal, Apple Pay</span>
             </div>
-          </label>
-          <label class="pm-option" data-provider="nowpayments">
-            <input type="radio" name="provider" value="nowpayments">
+          </label>` : ''}
+          ${npOn ? `<label class="pm-option${firstProvider === 'nowpayments' ? ' selected' : ''}" data-provider="nowpayments">
+            <input type="radio" name="provider" value="nowpayments"${firstProvider === 'nowpayments' ? ' checked' : ''}>
             <div class="pm-icon">₿</div>
             <div class="pm-label">
               <strong>Crypto</strong>
               <span>BTC, ETH, USDT & more</span>
             </div>
-          </label>
+          </label>` : ''}
         </div>
         <p style="font-size:13px;color:var(--muted);margin-bottom:18px;margin-top:14px" id="providerHint">
           After creating your account you'll be redirected to complete your payment securely.
