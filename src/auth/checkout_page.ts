@@ -16,6 +16,20 @@ export function getCheckoutHtml(providers?: { stripe?: boolean; lemonSqueezy?: b
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Checkout — Polymarket Bot</title>
+<meta name="description" content="Choose your PolyMarket Bot plan — Free, Pro ($99/mo), or Enterprise ($199/mo). Automate prediction market trading with 8+ strategies.">
+<link rel="canonical" href="https://polytradingbot.xyz/checkout">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PolyMarket Bot">
+<meta property="og:title" content="Checkout — Polymarket Bot">
+<meta property="og:description" content="Choose your PolyMarket Bot plan — Free, Pro, or Enterprise. Start automating Polymarket trading today.">
+<meta property="og:url" content="https://polytradingbot.xyz/checkout">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Checkout — Polymarket Bot">
+<meta name="twitter:description" content="Choose your PolyMarket Bot plan and start automating Polymarket trading.">
 <style>
 :root {
   --bg:       #0b0e11;

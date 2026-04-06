@@ -876,6 +876,26 @@ export class DashboardServer {
     const path = url.pathname;
 
     /* ─── Public routes (no auth required) ─── */
+
+    if (path === '/robots.txt') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(`User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /api/\n\nSitemap: https://polytradingbot.xyz/sitemap.xml\n`);
+      return;
+    }
+
+    if (path === '/sitemap.xml') {
+      const now = new Date().toISOString().slice(0, 10);
+      res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
+      res.end(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://polytradingbot.xyz/</loc><lastmod>${now}</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>\n  <url><loc>https://polytradingbot.xyz/login</loc><lastmod>${now}</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>\n  <url><loc>https://polytradingbot.xyz/checkout</loc><lastmod>${now}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>\n</urlset>\n`);
+      return;
+    }
+
+    if (path === '/pricing') {
+      res.writeHead(301, { Location: '/#pricing' });
+      res.end();
+      return;
+    }
+
     if (path === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(getLandingHtml());

@@ -9,6 +9,20 @@ export function getLoginHtml(): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polymarket Bot — Sign In</title>
+<meta name="description" content="Sign in or create your free PolyMarket Bot account. Automate Polymarket trading with proven strategies — no credit card required.">
+<link rel="canonical" href="https://polytradingbot.xyz/login">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PolyMarket Bot">
+<meta property="og:title" content="Polymarket Bot — Sign In">
+<meta property="og:description" content="Sign in or create your free PolyMarket Bot account. Automate Polymarket trading with proven strategies.">
+<meta property="og:url" content="https://polytradingbot.xyz/login">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Polymarket Bot — Sign In">
+<meta name="twitter:description" content="Sign in or create your free PolyMarket Bot account.">
 <style>
 :root {
   --bg:       #0b0e11;

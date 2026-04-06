@@ -9,7 +9,57 @@ export function getLandingHtml(): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PolyMarket Bot — Your 24/7 Automated Prediction Market Edge</title>
+<meta name="description" content="Automate your Polymarket trading with 8+ proven strategies. 24/7 bot execution, paper trading, and real-money support. Free plan available — no credit card required.">
+<link rel="canonical" href="https://polytradingbot.xyz/">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PolyMarket Bot">
+<meta property="og:title" content="PolyMarket Bot — Your 24/7 Automated Prediction Market Edge">
+<meta property="og:description" content="Automate your Polymarket trading with 8+ proven strategies. 24/7 bot execution, paper trading, and real-money support. Free plan available.">
+<meta property="og:url" content="https://polytradingbot.xyz/">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="PolyMarket Bot — Your 24/7 Automated Prediction Market Edge">
+<meta name="twitter:description" content="Automate your Polymarket trading with 8+ proven strategies. 24/7 bot execution, paper trading, and real-money support.">
+
+<!-- JSON-LD Structured Data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "PolyMarket Bot",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "Web",
+  "url": "https://polytradingbot.xyz/",
+  "description": "Automate your Polymarket trading with 8+ proven strategies. 24/7 bot execution, paper trading, and real-money support.",
+  "offers": [
+    { "@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD" },
+    { "@type": "Offer", "name": "Pro", "price": "99", "priceCurrency": "USD", "billingIncrement": "P1M" },
+    { "@type": "Offer", "name": "Enterprise", "price": "199", "priceCurrency": "USD", "billingIncrement": "P1M" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "How does PolyMarket Bot work?", "acceptedAnswer": { "@type": "Answer", "text": "Connect your Polymarket API key, pick a strategy, and the bot executes trades 24/7 based on your parameters." } },
+    { "@type": "Question", "name": "Do I need coding experience?", "acceptedAnswer": { "@type": "Answer", "text": "Not at all. Everything is controlled from a visual dashboard." } },
+    { "@type": "Question", "name": "Is my money safe?", "acceptedAnswer": { "@type": "Answer", "text": "We never custody your funds or hold your private keys. Your funds stay in your wallet at all times." } },
+    { "@type": "Question", "name": "Can I try it without risking real money?", "acceptedAnswer": { "@type": "Answer", "text": "Yes! Every strategy can run in paper trading mode with simulated funds." } },
+    { "@type": "Question", "name": "What if I'm not happy?", "acceptedAnswer": { "@type": "Answer", "text": "We offer a full 30-day money-back guarantee, no questions asked." } },
+    { "@type": "Question", "name": "How many strategies can I run at once?", "acceptedAnswer": { "@type": "Answer", "text": "Free users can run up to 5 paper bots. Pro supports up to 10 bots with live trading. Enterprise gives you unlimited bots." } },
+    { "@type": "Question", "name": "Can I cancel anytime?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, cancel anytime from your billing dashboard. No contracts, no commitments, no cancellation fees." } }
+  ]
+}
+</script>
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="dns-prefetch" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -211,6 +261,7 @@ footer{padding:40px 24px;text-align:center;border-top:1px solid var(--border)}
 <body>
 
 <!-- NAV -->
+<header>
 <nav class="nav">
   <div class="nav-inner">
     <div class="logo">Poly<span>Market</span> Bot</div>
@@ -223,6 +274,9 @@ footer{padding:40px 24px;text-align:center;border-top:1px solid var(--border)}
     </div>
   </div>
 </nav>
+</header>
+
+<main>
 
 <!-- HERO -->
 <section class="hero">
@@ -557,6 +611,7 @@ footer{padding:40px 24px;text-align:center;border-top:1px solid var(--border)}
     <span>\u2713 Upgrade anytime</span>
   </div>
 </section>
+</main>
 
 <!-- FOOTER -->
 <footer>
