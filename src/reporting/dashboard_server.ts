@@ -2780,11 +2780,45 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
   <div class="section-title"><span class="icon">\uD83C\uDF0D</span> Live Polymarket Markets</div>
   <p style="color:var(--muted);margin-bottom:16px">Real-time data from the Polymarket Gamma API. Top active markets sorted by 24h volume.</p>
   <button class="btn btn-primary" id="mkts-refresh" style="margin-bottom:16px">\uD83D\uDD04 Refresh Markets</button>
+
+  <!-- Loading spinner -->
+  <div id="mkts-loading" style="display:none;text-align:center;padding:60px 0">
+    <div class="mkts-spinner"></div>
+    <div style="color:var(--muted);margin-top:16px;font-size:14px">Fetching live markets from Polymarket\u2026</div>
+  </div>
+  <style>
+    .mkts-spinner{width:48px;height:48px;border:4px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:mkts-spin .8s linear infinite;margin:0 auto}
+    @keyframes mkts-spin{to{transform:rotate(360deg)}}
+    .mkts-row{cursor:pointer;transition:background .15s}
+    .mkts-row:hover{background:var(--surface2) !important}
+    .mkts-detail{display:none;animation:mkts-expand .25s ease-out}
+    .mkts-detail.open{display:table-row}
+    @keyframes mkts-expand{from{opacity:0}to{opacity:1}}
+    .mkts-detail-inner{padding:20px 24px;background:var(--surface);border-top:1px solid var(--border)}
+    .mkts-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+    @media(max-width:900px){.mkts-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:600px){.mkts-grid{grid-template-columns:1fr}}
+    .mkts-card{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+    .mkts-card h5{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px 0}
+    .mkts-kv{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid rgba(255,255,255,.04)}
+    .mkts-kv:last-child{border-bottom:none}
+    .mkts-kv .k{color:var(--muted)}
+    .mkts-kv .v{font-weight:600;font-family:monospace}
+    .mkts-bar-wrap{height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:6px}
+    .mkts-bar{height:100%;border-radius:4px;transition:width .3s}
+    .mkts-tag{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;margin-right:4px}
+    .mkts-link{color:var(--accent);text-decoration:none;font-size:12px;font-weight:500}
+    .mkts-link:hover{text-decoration:underline}
+    .mkts-chg-up{color:#4ade80}.mkts-chg-down{color:#f87171}.mkts-chg-flat{color:var(--muted)}
+    .mkts-chevron{display:inline-block;transition:transform .2s;font-size:10px;margin-left:6px;color:var(--muted)}
+    .mkts-row.expanded .mkts-chevron{transform:rotate(90deg)}
+  </style>
+
   <div class="table-wrap"><table class="tbl" id="mkts-table">
     <thead><tr>
       <th>Market</th><th>YES</th><th>NO</th><th>Bid</th><th>Ask</th><th>Spread</th><th>24h Vol</th><th>Liquidity</th>
     </tr></thead>
-    <tbody id="mkts-body"><tr><td colspan="8" style="text-align:center;color:var(--muted)">Loading markets\u2026</td></tr></tbody>
+    <tbody id="mkts-body"></tbody>
   </table></div>
 </div>
 
@@ -4657,23 +4691,90 @@ function showMsg(id,type,msg){
 }
 
 /* ─── Markets Tab ─── */
+let _mktsData=[];
+function fmtMoney(n){if(n>=1e6)return(n/1e6).toFixed(2)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'k';return n.toFixed(0)}
+function pctChg(v){if(v==null||v===undefined)return'<span class="mkts-chg-flat">—</span>';const pct=(v*100).toFixed(2);if(v>0)return'<span class="mkts-chg-up">+'+pct+'%</span>';if(v<0)return'<span class="mkts-chg-down">'+pct+'%</span>';return'<span class="mkts-chg-flat">0.00%</span>'}
+function timeUntil(d){if(!d)return'—';const ms=new Date(d).getTime()-Date.now();if(ms<=0)return'Ended';const days=Math.floor(ms/864e5);const hrs=Math.floor((ms%864e5)/36e5);if(days>30)return Math.floor(days/30)+'mo '+days%30+'d';if(days>0)return days+'d '+hrs+'h';const mins=Math.floor((ms%36e5)/6e4);return hrs+'h '+mins+'m'}
+
+function toggleMarketDetail(idx){
+  const row=document.getElementById('mkts-detail-'+idx);
+  const main=document.getElementById('mkts-row-'+idx);
+  if(!row)return;
+  if(row.classList.contains('open')){row.classList.remove('open');main.classList.remove('expanded')}
+  else{row.classList.add('open');main.classList.add('expanded')}
+}
+
+function buildDetailHtml(m,idx){
+  const yes=(m.outcomePrices[0]*100).toFixed(1);
+  const no=(m.outcomePrices[1]*100).toFixed(1);
+  const yesW=Math.max(2,m.outcomePrices[0]*100);
+  const noW=Math.max(2,m.outcomePrices[1]*100);
+  const spreadBps=(m.spread*10000).toFixed(0);
+  const impProb=((m.outcomePrices[0]+m.outcomePrices[1])*100).toFixed(1);
+  const overround=(parseFloat(impProb)-100).toFixed(1);
+
+  return '<td colspan="8"><div class="mkts-detail-inner"><div class="mkts-grid">'+
+    /* Probability & Pricing */
+    '<div class="mkts-card"><h5>\uD83C\uDFAF Probability & Pricing</h5>'+
+      '<div class="mkts-kv"><span class="k">YES Probability</span><span class="v" style="color:#4ade80">'+yes+'%</span></div>'+
+      '<div class="mkts-bar-wrap"><div class="mkts-bar" style="width:'+yesW+'%;background:#4ade80"></div></div>'+
+      '<div class="mkts-kv" style="margin-top:8px"><span class="k">NO Probability</span><span class="v" style="color:#f87171">'+no+'%</span></div>'+
+      '<div class="mkts-bar-wrap"><div class="mkts-bar" style="width:'+noW+'%;background:#f87171"></div></div>'+
+      '<div class="mkts-kv" style="margin-top:8px"><span class="k">Mid Price</span><span class="v">$'+m.midPrice.toFixed(4)+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">Bid / Ask</span><span class="v">$'+m.bid.toFixed(4)+' / $'+m.ask.toFixed(4)+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">Spread</span><span class="v">'+(m.spread*100).toFixed(2)+'% ('+spreadBps+' bps)</span></div>'+
+      '<div class="mkts-kv"><span class="k">Implied Total</span><span class="v">'+impProb+'% <span style="color:var(--muted);font-size:11px">(overround '+overround+'%)</span></span></div>'+
+    '</div>'+
+
+    /* Volume & Liquidity */
+    '<div class="mkts-card"><h5>\uD83D\uDCB0 Volume & Liquidity</h5>'+
+      '<div class="mkts-kv"><span class="k">24h Volume</span><span class="v" style="color:var(--accent)">$'+fmtMoney(m.volume24h)+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">Liquidity</span><span class="v">$'+fmtMoney(m.liquidity)+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">Vol/Liq Ratio</span><span class="v">'+(m.liquidity>0?(m.volume24h/m.liquidity).toFixed(2)+'x':'—')+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">1-Day Change</span><span class="v">'+pctChg(m.oneDayPriceChange)+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">1-Week Change</span><span class="v">'+pctChg(m.oneWeekPriceChange)+'</span></div>'+
+    '</div>'+
+
+    /* Market Info */
+    '<div class="mkts-card"><h5>\uD83D\uDCCB Market Info</h5>'+
+      '<div class="mkts-kv"><span class="k">Market ID</span><span class="v" style="font-size:11px">'+m.marketId+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">Outcomes</span><span class="v">'+m.outcomes.join(' / ')+'</span></div>'+
+      (m.endDate?'<div class="mkts-kv"><span class="k">Resolution</span><span class="v">'+new Date(m.endDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+'</span></div>'+
+      '<div class="mkts-kv"><span class="k">Time Left</span><span class="v">'+timeUntil(m.endDate)+'</span></div>':'')+
+      (m.eventSlug?'<div class="mkts-kv"><span class="k">Event</span><span class="v" style="font-size:11px">'+m.eventSlug+'</span></div>':'')+
+      '<div style="margin-top:10px">'+
+        '<a class="mkts-link" href="https://polymarket.com/event/'+encodeURIComponent(m.slug||m.eventSlug||m.marketId)+'" target="_blank" rel="noopener">\uD83D\uDD17 View on Polymarket \u2197</a>'+
+      '</div>'+
+    '</div>'+
+
+  '</div></div></td>';
+}
+
 async function loadMarkets(){
+  const loading=$('#mkts-loading');
+  const tableWrap=$('#mkts-table').parentElement;
+  loading.style.display='block';
+  tableWrap.style.display='none';
   try{
     const res=await fetch('/api/markets');
-    const markets=await res.json();
+    _mktsData=await res.json();
     const tbody=$('#mkts-body');
-    if(!markets.length){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--muted)">No markets found</td></tr>';return;}
-    tbody.innerHTML=markets.map(m=>{
+    if(!_mktsData.length){
+      tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:40px">No markets found</td></tr>';
+      loading.style.display='none';tableWrap.style.display='block';return;
+    }
+    let html='';
+    _mktsData.forEach((m,i)=>{
       const yes=(m.outcomePrices[0]*100).toFixed(1);
       const no=(m.outcomePrices[1]*100).toFixed(1);
       const spread=(m.spread*100).toFixed(2);
-      const vol=m.volume24h>=1000?(m.volume24h/1000).toFixed(1)+'k':m.volume24h.toFixed(0);
-      const liq=m.liquidity>=1000?(m.liquidity/1000).toFixed(1)+'k':m.liquidity.toFixed(0);
+      const vol=fmtMoney(m.volume24h);
+      const liq=fmtMoney(m.liquidity);
       const q=m.question.length>80?m.question.slice(0,77)+'...':m.question;
       const yesColor=m.outcomePrices[0]>0.6?'#4ade80':m.outcomePrices[0]<0.4?'#f87171':'#facc15';
       const noColor=m.outcomePrices[1]>0.6?'#4ade80':m.outcomePrices[1]<0.4?'#f87171':'#facc15';
-      return '<tr>'+
-        '<td style="max-width:320px;white-space:normal;line-height:1.3"><strong>'+q+'</strong><br><span style="color:var(--muted);font-size:11px">ID: '+m.marketId+'</span></td>'+
+      html+='<tr class="mkts-row" id="mkts-row-'+i+'" onclick="toggleMarketDetail('+i+')">'+
+        '<td style="max-width:320px;white-space:normal;line-height:1.3"><strong>'+q+'</strong><span class="mkts-chevron">\u25B6</span><br><span style="color:var(--muted);font-size:11px">ID: '+m.marketId+'</span></td>'+
         '<td style="color:'+yesColor+';font-weight:600">'+yes+'%</td>'+
         '<td style="color:'+noColor+';font-weight:600">'+no+'%</td>'+
         '<td>'+m.bid.toFixed(3)+'</td>'+
@@ -4682,8 +4783,16 @@ async function loadMarkets(){
         '<td>$'+vol+'</td>'+
         '<td>$'+liq+'</td>'+
         '</tr>';
-    }).join('');
-  }catch(e){console.error('Failed to load markets',e);}
+      html+='<tr class="mkts-detail" id="mkts-detail-'+i+'">'+buildDetailHtml(m,i)+'</tr>';
+    });
+    tbody.innerHTML=html;
+  }catch(e){
+    console.error('Failed to load markets',e);
+    $('#mkts-body').innerHTML='<tr><td colspan="8" style="text-align:center;color:#f87171;padding:40px">Failed to load markets. Try refreshing.</td></tr>';
+  }finally{
+    loading.style.display='none';
+    tableWrap.style.display='block';
+  }
 }
 $('#mkts-refresh').addEventListener('click',loadMarkets);
 
