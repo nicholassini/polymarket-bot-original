@@ -883,11 +883,18 @@ export class DashboardServer {
     }
 
     if (path === '/checkout') {
+      const auth = authenticateRequest(req, url);
+      let userEmail: string | undefined;
+      if (auth) {
+        const u = this.userDb.getUserById(auth.userId);
+        if (u) userEmail = u.email;
+      }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(getCheckoutHtml({
         stripe: isStripeConfigured(),
         lemonSqueezy: isLemonSqueezyConfigured(),
         nowPayments: isNowPaymentsConfigured(),
+        userEmail,
       }));
       return;
     }
@@ -954,7 +961,7 @@ export class DashboardServer {
     const isBlocked = freeTrialExpired;
     if (isBlocked) {
       // Allow billing & auth endpoints even without active sub
-      const billingPaths = ['/api/billing/checkout', '/api/billing/portal', '/api/auth/me', '/api/user/settings'];
+      const billingPaths = ['/api/billing/checkout', '/api/billing/upgrade', '/api/billing/portal', '/api/auth/me', '/api/user/settings'];
       if (!billingPaths.includes(path)) {
         if (path.startsWith('/api/')) {
           const msg = freeTrialExpired
@@ -981,6 +988,47 @@ export class DashboardServer {
     };
 
     /* ─── Billing routes (authenticated) ─── */
+    if (path === '/api/billing/upgrade' && method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const planChoice = body.plan === 'enterprise' ? 'enterprise' : 'pro';
+        const provider: string = String(body.provider || 'stripe');
+        const baseUrl = `http://${req.headers.host ?? 'localhost'}`;
+        let checkoutUrl = '';
+
+        this.userDb.updatePlanTier(userId, planChoice);
+
+        if (provider === 'lemonsqueezy' && isLemonSqueezyConfigured()) {
+          checkoutUrl = await createLSCheckoutSession(
+            userId, user.email,
+            `${baseUrl}/dashboard?billing=success`,
+          );
+        } else if (provider === 'nowpayments' && isNowPaymentsConfigured()) {
+          checkoutUrl = await createNPInvoice(
+            userId, user.email,
+            `${baseUrl}/dashboard?billing=success`,
+            `${baseUrl}/dashboard?billing=canceled`,
+          );
+        } else if (isStripeConfigured()) {
+          checkoutUrl = await createCheckoutSession(
+            this.userDb, userId, user.email,
+            `${baseUrl}/dashboard?billing=success`,
+            `${baseUrl}/dashboard?billing=canceled`,
+          );
+        }
+
+        if (checkoutUrl) {
+          json(res, 200, { ok: true, checkoutUrl });
+        } else {
+          json(res, 400, { ok: false, error: 'No payment provider configured' });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, 500, { ok: false, error: msg });
+      }
+      return;
+    }
+
     if (path === '/api/billing/checkout' && method === 'POST') {
       try {
         const baseUrl = `http://${req.headers.host ?? 'localhost'}`;

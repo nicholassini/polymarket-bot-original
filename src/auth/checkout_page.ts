@@ -2,12 +2,14 @@
  * Checkout page — served at `/checkout`.
  * Collects account info and processes payment via the signup + Stripe flow.
  */
-export function getCheckoutHtml(providers?: { stripe?: boolean; lemonSqueezy?: boolean; nowPayments?: boolean }): string {
+export function getCheckoutHtml(providers?: { stripe?: boolean; lemonSqueezy?: boolean; nowPayments?: boolean; userEmail?: string }): string {
   const p = providers ?? {};
   const stripeOn = !!p.stripe;
   const lsOn = !!p.lemonSqueezy;
   const npOn = !!p.nowPayments;
   const firstProvider = stripeOn ? 'stripe' : lsOn ? 'lemonsqueezy' : npOn ? 'nowpayments' : '';
+  const loggedIn = !!p.userEmail;
+  const userEmail = p.userEmail || '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -111,7 +113,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
 <nav class="nav">
   <a href="/" class="logo">Poly<span>Market</span> Bot</a>
   <div class="nav-links">
-    <a href="/login">Sign In</a>
+    ${loggedIn ? `<a href="/dashboard">${userEmail}</a>` : `<a href="/login">Sign In</a>`}
   </div>
 </nav>
 
@@ -163,10 +165,10 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
 
     <!-- Checkout Form -->
     <div class="checkout-form">
-      <h2>Create Your Account</h2>
+      <h2>${loggedIn ? 'Upgrade Your Account' : 'Create Your Account'}</h2>
       <div id="errorMsg" class="error-msg"></div>
       <form id="checkoutForm" autocomplete="on">
-        <div class="form-group">
+        ${loggedIn ? `<p style="color:var(--muted);font-size:14px;margin-bottom:16px">Signed in as <strong style="color:var(--text)">${userEmail}</strong></p>` : `<div class="form-group">
           <label>Email Address</label>
           <input type="email" id="email" placeholder="you@example.com" required autocomplete="email">
         </div>
@@ -177,7 +179,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
         <div class="form-group">
           <label>Confirm Password</label>
           <input type="password" id="confirmPassword" placeholder="Confirm your password" minlength="8" required autocomplete="new-password">
-        </div>
+        </div>`}
 
         <div class="divider"></div>
         <p class="divider-label">Choose Payment Method</p>
@@ -211,13 +213,13 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
           After creating your account you'll be redirected to complete your payment securely.
         </p>
 
-        <button type="submit" class="submit-btn" id="submitBtn">Continue to Payment — $99/mo</button>
+        <button type="submit" class="submit-btn" id="submitBtn">${loggedIn ? 'Upgrade' : 'Continue to Payment'} — $99/mo</button>
         <div class="secure-note">
           <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
           All payments processed securely via encrypted checkout
         </div>
         <div style="text-align:center;margin-top:18px">
-          <a href="/login" style="color:var(--muted);font-size:13px;text-decoration:underline" onclick="localStorage.setItem('authTab','signup')">Or start with a free account (paper trading only)</a>
+          ${loggedIn ? `<a href="/dashboard" style="color:var(--muted);font-size:13px;text-decoration:underline">Back to dashboard</a>` : `<a href="/login" style="color:var(--muted);font-size:13px;text-decoration:underline" onclick="localStorage.setItem('authTab','signup')">Or start with a free account (paper trading only)</a>`}
         </div>
       </form>
     </div>
@@ -245,7 +247,7 @@ function selectPlan(plan) {
   document.getElementById('summaryPlanPrice').textContent = '$' + p.price;
   document.getElementById('summaryTotal').textContent = '$' + p.price;
   document.getElementById('featureBots').textContent = p.bots;
-  submitBtn.textContent = 'Continue to Payment \u2014 $' + p.price + '/mo';
+  submitBtn.textContent = '${loggedIn ? 'Upgrade' : 'Continue to Payment'} \u2014 $' + p.price + '/mo';
   document.querySelectorAll('.plan-toggle-btn').forEach(b => {
     b.classList.remove('active','active-ent');
     if (b.dataset.plan === plan) b.classList.add(plan === 'enterprise' ? 'active-ent' : 'active');
@@ -271,45 +273,77 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   errorMsg.style.display = 'none';
 
-  const email = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value;
-  const confirmPassword = document.getElementById('confirmPassword').value;
-  const provider = document.querySelector('input[name="provider"]:checked').value;
+  const isLoggedIn = ${loggedIn};
+  const provider = document.querySelector('input[name="provider"]:checked');
+  const providerVal = provider ? provider.value : '';
 
-  if (password !== confirmPassword) {
-    showError('Passwords do not match.');
-    return;
-  }
-  if (password.length < 8) {
-    showError('Password must be at least 8 characters.');
-    return;
-  }
+  if (!isLoggedIn) {
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const confirmPassword = document.getElementById('confirmPassword').value;
 
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Creating account\u2026';
-
-  try {
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, plan: selectedPlan, provider }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showError(data.error || 'Something went wrong.');
-      submitBtn.disabled = false;
-      selectPlan(selectedPlan);
+    if (password !== confirmPassword) {
+      showError('Passwords do not match.');
       return;
     }
-    if (data.checkoutUrl) {
-      window.location.href = data.checkoutUrl;
-    } else {
-      window.location.href = '/dashboard';
+    if (password.length < 8) {
+      showError('Password must be at least 8 characters.');
+      return;
     }
-  } catch (err) {
-    showError('Network error. Please try again.');
-    submitBtn.disabled = false;
-    selectPlan(selectedPlan);
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating account\u2026';
+
+    try {
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, plan: selectedPlan, provider: providerVal }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.error || 'Something went wrong.');
+        submitBtn.disabled = false;
+        selectPlan(selectedPlan);
+        return;
+      }
+      if (data.checkoutUrl) {
+        window.location.href = data.checkoutUrl;
+      } else {
+        window.location.href = '/dashboard';
+      }
+    } catch (err) {
+      showError('Network error. Please try again.');
+      submitBtn.disabled = false;
+      selectPlan(selectedPlan);
+    }
+  } else {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Redirecting\u2026';
+
+    try {
+      const res = await fetch('/api/billing/upgrade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: selectedPlan, provider: providerVal }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.error || 'Something went wrong.');
+        submitBtn.disabled = false;
+        selectPlan(selectedPlan);
+        return;
+      }
+      if (data.checkoutUrl) {
+        window.location.href = data.checkoutUrl;
+      } else {
+        window.location.href = '/dashboard';
+      }
+    } catch (err) {
+      showError('Network error. Please try again.');
+      submitBtn.disabled = false;
+      selectPlan(selectedPlan);
+    }
   }
 });
 </script>
