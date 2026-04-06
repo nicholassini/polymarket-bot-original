@@ -53,10 +53,18 @@ export interface ConsoleEntry {
 
 const MAX_ENTRIES = 2000;
 
+/** Categories that contain no user-specific data and can be seen by anyone */
+const GLOBAL_CATEGORIES = new Set<LogCategory>(['SCAN', 'ENGINE', 'SYSTEM']);
+
+interface SSEClientInfo {
+  walletIds: Set<string>;
+  isAdmin: boolean;
+}
+
 class ConsoleLogSingleton extends EventEmitter {
   private readonly buffer: ConsoleEntry[] = [];
   private seq = 0;
-  private readonly sseClients = new Set<http.ServerResponse>();
+  private readonly sseClients = new Map<http.ServerResponse, SSEClientInfo>();
 
   /* ── Public API ─────────────────────────────────────────────── */
 
@@ -107,10 +115,12 @@ class ConsoleLogSingleton extends EventEmitter {
 
   /* ── Buffer access ──────────────────────────────────────────── */
 
-  getEntries(limit = 500, offset = 0): ConsoleEntry[] {
+  getEntries(limit = 500, offset = 0, walletIds?: Set<string>, isAdmin?: boolean): ConsoleEntry[] {
     const start = Math.max(0, this.buffer.length - limit - offset);
     const end = this.buffer.length - offset;
-    return this.buffer.slice(start, end);
+    const slice = this.buffer.slice(start, end);
+    if (isAdmin || !walletIds) return slice;
+    return slice.filter((e) => this.isEntryVisibleTo(e, walletIds));
   }
 
   getEntriesSince(sinceId: number): ConsoleEntry[] {
@@ -119,24 +129,27 @@ class ConsoleLogSingleton extends EventEmitter {
     return this.buffer.slice(idx);
   }
 
-  getStats(): {
+  getStats(walletIds?: Set<string>, isAdmin?: boolean): {
     total: number;
     byLevel: Record<string, number>;
     byCategory: Record<string, number>;
   } {
     const byLevel: Record<string, number> = {};
     const byCategory: Record<string, number> = {};
+    let total = 0;
     for (const e of this.buffer) {
+      if (!isAdmin && walletIds && !this.isEntryVisibleTo(e, walletIds)) continue;
+      total++;
       byLevel[e.level] = (byLevel[e.level] ?? 0) + 1;
       byCategory[e.category] = (byCategory[e.category] ?? 0) + 1;
     }
-    return { total: this.buffer.length, byLevel, byCategory };
+    return { total, byLevel, byCategory };
   }
 
   /* ── SSE (Server-Sent Events) ───────────────────────────────── */
 
   /** Handle an incoming SSE connection from the dashboard */
-  addSSEClient(res: http.ServerResponse): void {
+  addSSEClient(res: http.ServerResponse, walletIds: Set<string>, isAdmin: boolean): void {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -145,23 +158,44 @@ class ConsoleLogSingleton extends EventEmitter {
     });
 
     // Send recent history as a burst so the client is immediately populated
-    const recent = this.getEntries(200);
+    const recent = this.getEntries(200, 0, walletIds, isAdmin);
     for (const entry of recent) {
       res.write(`data: ${JSON.stringify(entry)}\n\n`);
     }
 
-    this.sseClients.add(res);
+    this.sseClients.set(res, { walletIds, isAdmin });
 
     res.on('close', () => {
       this.sseClients.delete(res);
     });
   }
 
+  /** Update the wallet set for an existing SSE client (e.g. after wallet creation) */
+  updateSSEClientWallets(res: http.ServerResponse, walletIds: Set<string>): void {
+    const info = this.sseClients.get(res);
+    if (info) info.walletIds = walletIds;
+  }
+
+  /** Check if a log entry is visible to a user based on their wallet ownership */
+  private isEntryVisibleTo(entry: ConsoleEntry, walletIds: Set<string>): boolean {
+    // Global categories (SCAN, ENGINE, SYSTEM) without a walletId are visible to all
+    if (GLOBAL_CATEGORIES.has(entry.category) && !entry.data?.['walletId']) return true;
+    // Entries with a walletId are only visible if owned
+    const entryWalletId = entry.data?.['walletId'] as string | undefined;
+    if (entryWalletId) return walletIds.has(entryWalletId);
+    // Entries without a walletId in non-global categories (e.g. ERROR without wallet context)
+    // are visible to all — they're system-wide
+    if (!entryWalletId && !entry.data?.['walletId']) return true;
+    return false;
+  }
+
   private broadcast(entry: ConsoleEntry): void {
     const payload = `data: ${JSON.stringify(entry)}\n\n`;
-    for (const client of this.sseClients) {
+    for (const [client, info] of this.sseClients) {
       try {
-        client.write(payload);
+        if (info.isAdmin || this.isEntryVisibleTo(entry, info.walletIds)) {
+          client.write(payload);
+        }
       } catch {
         this.sseClients.delete(client);
       }

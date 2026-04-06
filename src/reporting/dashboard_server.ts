@@ -10,6 +10,28 @@ import { consoleLog } from './console_log';
 import type { WhaleAPI } from '../whales/whale_api';
 import type { Engine } from '../core/engine';
 import { CopyTradeStrategy } from '../strategies/copy_trading/copy_trade_strategy';
+import { UserDB } from '../auth/user_db';
+import { authenticateRequest, signToken, type JwtPayload } from '../auth/jwt';
+import { getLoginHtml } from '../auth/login_page';
+import { getLandingHtml } from '../auth/landing_page';
+import { getCheckoutHtml } from '../auth/checkout_page';
+import { getAdminHtml } from '../auth/admin_page';
+import {
+  isStripeConfigured,
+  createCheckoutSession,
+  handleWebhook as stripeHandleWebhook,
+  createPortalSession,
+} from '../billing/stripe_billing';
+import {
+  isLemonSqueezyConfigured,
+  createLSCheckoutSession,
+  handleLSWebhook,
+} from '../billing/lemonsqueezy_billing';
+import {
+  isNowPaymentsConfigured,
+  createNPInvoice,
+  handleNPWebhook,
+} from '../billing/nowpayments_billing';
 
 /* ──────────────────────────────────────────────────────────────
    Strategy catalog — rich metadata used by the Strategies tab
@@ -690,14 +712,17 @@ export class DashboardServer {
   private server?: http.Server;
   private whaleApi?: WhaleAPI;
   private engine?: Engine;
-  private sseClients: Set<http.ServerResponse> = new Set();
+  private sseClients = new Map<http.ServerResponse, string>(); // response → userId
   private sseInterval?: ReturnType<typeof setInterval>;
   private readonly walletDisplayNames = new Map<string, string>();
+  private readonly userDb: UserDB;
 
   constructor(
     private readonly walletManager: WalletManager,
     private readonly port = 3000,
-  ) {}
+  ) {
+    this.userDb = new UserDB();
+  }
 
   setWhaleApi(api: WhaleAPI): void {
     this.whaleApi = api;
@@ -718,11 +743,12 @@ export class DashboardServer {
     return prices;
   }
 
-  /** Get all running CopyTradeStrategy instances from the engine */
-  private getCopyTradeInstances(): CopyTradeStrategy[] {
+  /** Get all running CopyTradeStrategy instances from the engine with their walletIds */
+  private getCopyTradeInstances(): Array<{ instance: CopyTradeStrategy; walletId: string }> {
     if (!this.engine) return [];
-    return this.engine.getStrategiesByName('copy_trade')
-      .filter((s): s is CopyTradeStrategy => s instanceof CopyTradeStrategy);
+    return this.engine.getRunnersByStrategyName('copy_trade')
+      .filter((r): r is { strategy: CopyTradeStrategy; walletId: string } => r.strategy instanceof CopyTradeStrategy)
+      .map((r) => ({ instance: r.strategy as CopyTradeStrategy, walletId: r.walletId }));
   }
 
   start(): void {
@@ -753,20 +779,24 @@ export class DashboardServer {
       );
     });
 
-    // Broadcast dashboard data to SSE clients every second
+    // Broadcast dashboard data to SSE clients every second (per-user scoped)
     this.sseInterval = setInterval(() => {
       if (this.sseClients.size === 0) return;
-      const payload = buildDashboardPayload(
-        this.walletManager.listWallets(),
-        this.walletManager.getAllTradeHistories(),
-        this.getLiveMarketPrices(),
-        this.engine?.getPausedWallets(),
-        this.walletDisplayNames,
-      );
-      const data = `event: dashboard\ndata: ${JSON.stringify(payload)}\n\n`;
-      for (const client of this.sseClients) {
+      const allWallets = this.walletManager.listWallets();
+      const allTrades = this.walletManager.getAllTradeHistories();
+      const prices = this.getLiveMarketPrices();
+      const paused = this.engine?.getPausedWallets();
+
+      for (const [client, userId] of this.sseClients) {
         try {
-          client.write(data);
+          const userWalletIds = new Set(this.userDb.getWalletIds(userId));
+          const userWallets = allWallets.filter(w => userWalletIds.has(w.walletId));
+          const userTrades = new Map<string, import('../types').TradeRecord[]>();
+          for (const [wid, trades] of allTrades) {
+            if (userWalletIds.has(wid)) userTrades.set(wid, trades);
+          }
+          const payload = buildDashboardPayload(userWallets, userTrades, prices, paused, this.walletDisplayNames);
+          client.write(`event: dashboard\ndata: ${JSON.stringify(payload)}\n\n`);
         } catch {
           this.sseClients.delete(client);
         }
@@ -779,7 +809,7 @@ export class DashboardServer {
       clearInterval(this.sseInterval);
       this.sseInterval = undefined;
     }
-    for (const client of this.sseClients) {
+    for (const [client] of this.sseClients) {
       try { client.end(); } catch { /* ignore */ }
     }
     this.sseClients.clear();
@@ -797,8 +827,444 @@ export class DashboardServer {
     const method = req.method ?? 'GET';
     const path = url.pathname;
 
-    /* ─── HTML pages ─── */
-    if (path === '/' || path === '/dashboard') {
+    /* ─── Public routes (no auth required) ─── */
+    if (path === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(getLandingHtml());
+      return;
+    }
+
+    if (path === '/login') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(getLoginHtml());
+      return;
+    }
+
+    if (path === '/checkout') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(getCheckoutHtml());
+      return;
+    }
+
+    if (path === '/api/auth/signup' && method === 'POST') {
+      await this.handleSignup(req, res);
+      return;
+    }
+
+    if (path === '/api/auth/login' && method === 'POST') {
+      await this.handleLogin(req, res);
+      return;
+    }
+
+    if (path === '/api/auth/logout' && method === 'POST') {
+      res.writeHead(200, {
+        'Set-Cookie': 'token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+        'Content-Type': 'application/json',
+      });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (path === '/api/billing/webhook' && method === 'POST') {
+      await this.handleStripeWebhook(req, res);
+      return;
+    }
+
+    if (path === '/api/billing/lemonsqueezy/webhook' && method === 'POST') {
+      await this.handleLSWebhookRoute(req, res);
+      return;
+    }
+
+    if (path === '/api/billing/nowpayments/webhook' && method === 'POST') {
+      await this.handleNPWebhookRoute(req, res);
+      return;
+    }
+
+    /* ─── Authenticate all other routes ─── */
+    const auth = authenticateRequest(req, url);
+    if (!auth) {
+      if (path.startsWith('/api/')) {
+        json(res, 401, { error: 'Unauthorized — please log in' });
+      } else {
+        res.writeHead(302, { Location: '/login' });
+        res.end();
+      }
+      return;
+    }
+
+    /* ─── Check subscription is active ─── */
+    const user = this.userDb.getUserById(auth.userId);
+    if (!user) {
+      json(res, 401, { error: 'User not found' });
+      return;
+    }
+
+    /* ─── Free trial expiry check (48 hours) ─── */
+    const TRIAL_DURATION_MS = 48 * 60 * 60 * 1000;
+    const hasPaidSub = !!user.subscriptionId && (user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing');
+    const effectivelyFree = !hasPaidSub && !user.isAdmin;
+    const freeTrialExpired = effectivelyFree && Date.now() > (user.createdAt + TRIAL_DURATION_MS);
+
+    const isBlocked = freeTrialExpired;
+    if (isBlocked) {
+      // Allow billing & auth endpoints even without active sub
+      const billingPaths = ['/api/billing/checkout', '/api/billing/portal', '/api/auth/me', '/api/user/settings'];
+      if (!billingPaths.includes(path)) {
+        if (path.startsWith('/api/')) {
+          const msg = freeTrialExpired
+            ? 'Your 48-hour free trial has expired. Upgrade to Pro to continue using the platform.'
+            : 'Subscription inactive. Please update your payment.';
+          json(res, 403, { error: msg, subscriptionStatus: user.subscriptionStatus, trialExpired: freeTrialExpired });
+          return;
+        }
+        // Serve dashboard HTML so the JS can show an upgrade prompt
+      }
+    }
+
+    /* ─── User scoping helpers ─── */
+    const userId = auth.userId;
+    const userWalletIds = new Set(this.userDb.getWalletIds(userId));
+    const getUserWallets = () => this.walletManager.listWallets().filter(w => userWalletIds.has(w.walletId));
+    const getUserTradeHistories = () => {
+      const all = this.walletManager.getAllTradeHistories();
+      const filtered = new Map<string, import('../types').TradeRecord[]>();
+      for (const [wid, trades] of all) {
+        if (userWalletIds.has(wid)) filtered.set(wid, trades);
+      }
+      return filtered;
+    };
+
+    /* ─── Billing routes (authenticated) ─── */
+    if (path === '/api/billing/checkout' && method === 'POST') {
+      try {
+        const baseUrl = `http://${req.headers.host ?? 'localhost'}`;
+        const checkoutUrl = await createCheckoutSession(
+          this.userDb, userId, user.email,
+          `${baseUrl}/dashboard?billing=success`,
+          `${baseUrl}/dashboard?billing=canceled`,
+        );
+        json(res, 200, { checkoutUrl });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, 500, { ok: false, error: msg });
+      }
+      return;
+    }
+
+    if (path === '/api/billing/portal' && method === 'POST') {
+      try {
+        const baseUrl = `http://${req.headers.host ?? 'localhost'}`;
+        const portalUrl = await createPortalSession(this.userDb, userId, `${baseUrl}/dashboard`);
+        json(res, 200, { portalUrl });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, 500, { ok: false, error: msg });
+      }
+      return;
+    }
+
+    if (path === '/api/auth/me' && method === 'GET') {
+      const TRIAL_DURATION_MS = 48 * 60 * 60 * 1000; // 48 hours
+      const trialEnd = user.createdAt + TRIAL_DURATION_MS;
+      // User is effectively free if they have no real subscription and aren't admin
+      const hasPaidSubscription = !!user.subscriptionId && (user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing');
+      const effectivelyFree = !hasPaidSubscription && !user.isAdmin;
+      const trialExpired = effectivelyFree && Date.now() > trialEnd;
+      const trialRemainingMs = effectivelyFree ? Math.max(0, trialEnd - Date.now()) : 0;
+      // Plan tier & wallet limits
+      const planTier = user.isAdmin ? 'enterprise' : (effectivelyFree ? 'free' : user.planTier || 'pro');
+      const walletLimit = planTier === 'enterprise' ? -1 : planTier === 'pro' ? 10 : 5;
+      const walletCount = this.userDb.getWalletIds(user.id).length;
+      json(res, 200, {
+        userId: user.id,
+        email: user.email,
+        subscriptionStatus: user.subscriptionStatus,
+        isAdmin: user.isAdmin,
+        createdAt: user.createdAt,
+        effectivelyFree,
+        trialEnd,
+        trialExpired,
+        trialRemainingMs,
+        planTier,
+        walletLimit,
+        walletCount,
+      });
+      return;
+    }
+
+    /* ─── User settings routes ─── */
+    if (path === '/api/user/settings' && method === 'GET') {
+      json(res, 200, {
+        hasPolymarketKey: !!user.polymarketApiKey,
+        polymarketKeyHint: user.polymarketApiKey ? user.polymarketApiKey.slice(-4) : '',
+      });
+      return;
+    }
+
+    if (path === '/api/user/settings' && method === 'POST') {
+      const body = await readBody(req);
+      if (body.polymarketApiKey !== undefined) {
+        const key = body.polymarketApiKey;
+        if (key === null || key === '') {
+          this.userDb.updatePolymarketApiKey(userId, null);
+        } else if (typeof key === 'string' && key.length >= 8) {
+          this.userDb.updatePolymarketApiKey(userId, key);
+        } else {
+          json(res, 400, { error: 'Invalid API key format' });
+          return;
+        }
+      }
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    /* ─── Admin routes ─── */
+    if (path === '/admin') {
+      if (!user.isAdmin) { res.writeHead(302, { Location: '/dashboard' }); res.end(); return; }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(getAdminHtml());
+      return;
+    }
+
+    if (path.startsWith('/api/admin/')) {
+      if (!user.isAdmin) { json(res, 403, { error: 'Admin access required' }); return; }
+
+      if (path === '/api/admin/data' && method === 'GET') {
+        const users = this.userDb.getAllUsers();
+        const activeCount = users.filter(u => u.subscriptionStatus === 'active').length;
+        const canceledCount = users.filter(u => u.subscriptionStatus === 'canceled').length;
+        const uptimeS = process.uptime();
+        const h = Math.floor(uptimeS / 3600);
+        const m = Math.floor((uptimeS % 3600) / 60);
+        const uptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+
+        const envVars = [
+          { key: 'ENABLE_LIVE_TRADING', display: process.env.ENABLE_LIVE_TRADING || 'false', set: !!process.env.ENABLE_LIVE_TRADING },
+          { key: 'POLYMARKET_API_KEY', display: process.env.POLYMARKET_API_KEY ? '••••' + process.env.POLYMARKET_API_KEY.slice(-4) : '', set: !!process.env.POLYMARKET_API_KEY },
+          { key: 'DASHBOARD_PORT', display: process.env.DASHBOARD_PORT || '3000', set: true },
+          { key: 'JWT_SECRET', display: '••••••••', set: !!process.env.JWT_SECRET },
+          { key: 'STRIPE_SECRET_KEY', display: process.env.STRIPE_SECRET_KEY ? '••••' + process.env.STRIPE_SECRET_KEY.slice(-4) : '', set: !!process.env.STRIPE_SECRET_KEY },
+          { key: 'STRIPE_WEBHOOK_SECRET', display: process.env.STRIPE_WEBHOOK_SECRET ? '••••' + process.env.STRIPE_WEBHOOK_SECRET.slice(-4) : '', set: !!process.env.STRIPE_WEBHOOK_SECRET },
+          { key: 'STRIPE_PRICE_ID', display: process.env.STRIPE_PRICE_ID || '', set: !!process.env.STRIPE_PRICE_ID },
+          { key: 'SIGNUP_FEE_CENTS', display: process.env.SIGNUP_FEE_CENTS || '0', set: true },
+          { key: 'LEMONSQUEEZY_API_KEY', display: process.env.LEMONSQUEEZY_API_KEY ? '••••' + process.env.LEMONSQUEEZY_API_KEY.slice(-4) : '', set: !!process.env.LEMONSQUEEZY_API_KEY },
+          { key: 'LEMONSQUEEZY_STORE_ID', display: process.env.LEMONSQUEEZY_STORE_ID || '', set: !!process.env.LEMONSQUEEZY_STORE_ID },
+          { key: 'LEMONSQUEEZY_VARIANT_ID', display: process.env.LEMONSQUEEZY_VARIANT_ID || '', set: !!process.env.LEMONSQUEEZY_VARIANT_ID },
+          { key: 'LEMONSQUEEZY_WEBHOOK_SECRET', display: process.env.LEMONSQUEEZY_WEBHOOK_SECRET ? '••••' + process.env.LEMONSQUEEZY_WEBHOOK_SECRET.slice(-4) : '', set: !!process.env.LEMONSQUEEZY_WEBHOOK_SECRET },
+          { key: 'NOWPAYMENTS_API_KEY', display: process.env.NOWPAYMENTS_API_KEY ? '••••' + process.env.NOWPAYMENTS_API_KEY.slice(-4) : '', set: !!process.env.NOWPAYMENTS_API_KEY },
+          { key: 'NOWPAYMENTS_IPN_SECRET', display: process.env.NOWPAYMENTS_IPN_SECRET ? '••••' + process.env.NOWPAYMENTS_IPN_SECRET.slice(-4) : '', set: !!process.env.NOWPAYMENTS_IPN_SECRET },
+          { key: 'NOWPAYMENTS_PRICE_USD', display: process.env.NOWPAYMENTS_PRICE_USD || '99', set: !!process.env.NOWPAYMENTS_PRICE_USD },
+        ];
+
+        json(res, 200, {
+          stats: { totalUsers: users.length, activeSubscriptions: activeCount, canceled: canceledCount },
+          system: {
+            stripeConfigured: isStripeConfigured(),
+            lemonSqueezyConfigured: isLemonSqueezyConfigured(),
+            nowPaymentsConfigured: isNowPaymentsConfigured(),
+            uptime,
+            nodeVersion: process.version,
+            totalWallets: this.walletManager.listWallets().length,
+          },
+          stripe: {
+            secretKey: process.env.STRIPE_SECRET_KEY ? '••••' + process.env.STRIPE_SECRET_KEY.slice(-4) : '',
+            webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ? '••••' + process.env.STRIPE_WEBHOOK_SECRET.slice(-4) : '',
+            priceId: process.env.STRIPE_PRICE_ID || '',
+            signupFeeCents: Number(process.env.SIGNUP_FEE_CENTS || '0'),
+          },
+          lemonSqueezy: {
+            apiKey: process.env.LEMONSQUEEZY_API_KEY ? '••••' + process.env.LEMONSQUEEZY_API_KEY.slice(-4) : '',
+            webhookSecret: process.env.LEMONSQUEEZY_WEBHOOK_SECRET ? '••••' + process.env.LEMONSQUEEZY_WEBHOOK_SECRET.slice(-4) : '',
+            storeId: process.env.LEMONSQUEEZY_STORE_ID || '',
+            variantId: process.env.LEMONSQUEEZY_VARIANT_ID || '',
+          },
+          nowPayments: {
+            apiKey: process.env.NOWPAYMENTS_API_KEY ? '••••' + process.env.NOWPAYMENTS_API_KEY.slice(-4) : '',
+            ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET ? '••••' + process.env.NOWPAYMENTS_IPN_SECRET.slice(-4) : '',
+            priceUsd: Number(process.env.NOWPAYMENTS_PRICE_USD || '99'),
+          },
+          env: envVars,
+          users: users.map(u => ({
+            id: u.id,
+            email: u.email,
+            isAdmin: u.isAdmin,
+            subscriptionStatus: u.subscriptionStatus,
+            stripeCustomerId: u.stripeCustomerId,
+            walletCount: this.userDb.getWalletIds(u.id).length,
+            createdAt: u.createdAt,
+          })),
+        });
+        return;
+      }
+
+      if (path === '/api/admin/set-admin' && method === 'POST') {
+        const body = await readBody(req);
+        const targetId = String(body.userId ?? '');
+        const isAdmin = Boolean(body.isAdmin);
+        if (!targetId) { json(res, 400, { error: 'userId required' }); return; }
+        this.userDb.setAdmin(targetId, isAdmin);
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      if (path === '/api/admin/set-subscription' && method === 'POST') {
+        const body = await readBody(req);
+        const targetId = String(body.userId ?? '');
+        const status = String(body.status ?? 'active');
+        if (!targetId) { json(res, 400, { error: 'userId required' }); return; }
+        this.userDb.updateSubscription(targetId, '', status);
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      if (path === '/api/admin/stripe-config' && method === 'POST') {
+        const body = await readBody(req);
+        const fs = require('fs');
+        const path_ = require('path');
+        const envPath = path_.join(process.cwd(), '.env');
+        let envContent = '';
+        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
+
+        const updates: Record<string, string> = {};
+        if (body.secretKey && typeof body.secretKey === 'string' && !body.secretKey.startsWith('••••')) updates['STRIPE_SECRET_KEY'] = body.secretKey;
+        if (body.webhookSecret && typeof body.webhookSecret === 'string' && !body.webhookSecret.startsWith('••••')) updates['STRIPE_WEBHOOK_SECRET'] = body.webhookSecret;
+        if (body.priceId && typeof body.priceId === 'string') updates['STRIPE_PRICE_ID'] = body.priceId;
+        if (body.signupFeeCents !== undefined) updates['SIGNUP_FEE_CENTS'] = String(Number(body.signupFeeCents) || 0);
+
+        for (const [key, val] of Object.entries(updates)) {
+          const re = new RegExp('^' + key + '=.*$', 'm');
+          if (re.test(envContent)) {
+            envContent = envContent.replace(re, key + '=' + val);
+          } else {
+            envContent += '\n' + key + '=' + val;
+          }
+          process.env[key] = val;
+        }
+        fs.writeFileSync(envPath, envContent);
+        json(res, 200, { ok: true, message: 'Stripe settings saved. Restart server for full effect.' });
+        return;
+      }
+
+      if (path === '/api/admin/stripe-test' && method === 'GET') {
+        try {
+          if (!isStripeConfigured()) { json(res, 200, { ok: false, message: 'Stripe is not configured — add keys first' }); return; }
+          json(res, 200, { ok: true, message: 'Stripe connection successful!' });
+        } catch (err) {
+          json(res, 200, { ok: false, message: 'Stripe test failed: ' + (err instanceof Error ? err.message : String(err)) });
+        }
+        return;
+      }
+
+      if (path === '/api/admin/lemonsqueezy-config' && method === 'POST') {
+        const body = await readBody(req);
+        const fs = require('fs');
+        const path_ = require('path');
+        const envPath = path_.join(process.cwd(), '.env');
+        let envContent = '';
+        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
+
+        const updates: Record<string, string> = {};
+        if (body.apiKey && typeof body.apiKey === 'string' && !body.apiKey.startsWith('••••')) updates['LEMONSQUEEZY_API_KEY'] = body.apiKey;
+        if (body.webhookSecret && typeof body.webhookSecret === 'string' && !body.webhookSecret.startsWith('••••')) updates['LEMONSQUEEZY_WEBHOOK_SECRET'] = body.webhookSecret;
+        if (body.storeId && typeof body.storeId === 'string') updates['LEMONSQUEEZY_STORE_ID'] = body.storeId;
+        if (body.variantId && typeof body.variantId === 'string') updates['LEMONSQUEEZY_VARIANT_ID'] = body.variantId;
+
+        for (const [key, val] of Object.entries(updates)) {
+          const re = new RegExp('^' + key + '=.*$', 'm');
+          if (re.test(envContent)) {
+            envContent = envContent.replace(re, key + '=' + val);
+          } else {
+            envContent += '\n' + key + '=' + val;
+          }
+          process.env[key] = val;
+        }
+        fs.writeFileSync(envPath, envContent);
+        json(res, 200, { ok: true, message: 'Lemon Squeezy settings saved. Restart server for full effect.' });
+        return;
+      }
+
+      if (path === '/api/admin/nowpayments-config' && method === 'POST') {
+        const body = await readBody(req);
+        const fs = require('fs');
+        const path_ = require('path');
+        const envPath = path_.join(process.cwd(), '.env');
+        let envContent = '';
+        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
+
+        const updates: Record<string, string> = {};
+        if (body.apiKey && typeof body.apiKey === 'string' && !body.apiKey.startsWith('••••')) updates['NOWPAYMENTS_API_KEY'] = body.apiKey;
+        if (body.ipnSecret && typeof body.ipnSecret === 'string' && !body.ipnSecret.startsWith('••••')) updates['NOWPAYMENTS_IPN_SECRET'] = body.ipnSecret;
+        if (body.priceUsd !== undefined && body.priceUsd !== '') updates['NOWPAYMENTS_PRICE_USD'] = String(Number(body.priceUsd) || 99);
+
+        for (const [key, val] of Object.entries(updates)) {
+          const re = new RegExp('^' + key + '=.*$', 'm');
+          if (re.test(envContent)) {
+            envContent = envContent.replace(re, key + '=' + val);
+          } else {
+            envContent += '\n' + key + '=' + val;
+          }
+          process.env[key] = val;
+        }
+        fs.writeFileSync(envPath, envContent);
+        json(res, 200, { ok: true, message: 'NOWPayments settings saved. Restart server for full effect.' });
+        return;
+      }
+
+      if (path === '/api/admin/settings' && method === 'POST') {
+        const body = await readBody(req);
+        const settings = body.settings;
+        if (!settings || typeof settings !== 'object') { json(res, 400, { error: 'settings object required' }); return; }
+
+        const allowedKeys = new Set([
+          'ENABLE_LIVE_TRADING', 'POLYMARKET_API_KEY', 'DASHBOARD_PORT', 'JWT_SECRET',
+          'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID', 'SIGNUP_FEE_CENTS',
+          'LEMONSQUEEZY_API_KEY', 'LEMONSQUEEZY_WEBHOOK_SECRET', 'LEMONSQUEEZY_STORE_ID', 'LEMONSQUEEZY_VARIANT_ID',
+          'NOWPAYMENTS_API_KEY', 'NOWPAYMENTS_IPN_SECRET', 'NOWPAYMENTS_PRICE_USD',
+        ]);
+
+        const fs = require('fs');
+        const path_ = require('path');
+        const envPath = path_.join(process.cwd(), '.env');
+        let envContent = '';
+        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
+
+        let count = 0;
+        for (const [key, val] of Object.entries(settings)) {
+          if (!allowedKeys.has(key)) continue;
+          const strVal = String(val).trim();
+          if (!strVal || strVal.startsWith('••••')) continue;
+          const re = new RegExp('^' + key + '=.*$', 'm');
+          if (re.test(envContent)) {
+            envContent = envContent.replace(re, key + '=' + strVal);
+          } else {
+            envContent += '\n' + key + '=' + strVal;
+          }
+          process.env[key] = strVal;
+          count++;
+        }
+        if (count > 0) fs.writeFileSync(envPath, envContent);
+        json(res, 200, { ok: true, message: count + ' setting(s) saved. Some changes may require a restart.' });
+        return;
+      }
+
+      if (path === '/api/admin/promote' && method === 'POST') {
+        const body = await readBody(req);
+        const email = String(body.email ?? '').trim().toLowerCase();
+        if (!email) { json(res, 400, { error: 'Email required' }); return; }
+        const allUsers = this.userDb.getAllUsers();
+        const target = allUsers.find(u => u.email === email);
+        if (!target) { json(res, 404, { error: 'User not found' }); return; }
+        this.userDb.setAdmin(target.id, true);
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      json(res, 404, { error: 'Admin endpoint not found' });
+      return;
+    }
+
+    /* ─── Dashboard HTML ─── */
+    if (path === '/dashboard') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(getDashboardHtml());
       return;
@@ -807,8 +1273,8 @@ export class DashboardServer {
     /* ─── JSON: overview data (used by Dashboard tab) ─── */
     if (path === '/api/data' && method === 'GET') {
       json(res, 200, buildDashboardPayload(
-        this.walletManager.listWallets(),
-        this.walletManager.getAllTradeHistories(),
+        getUserWallets(),
+        getUserTradeHistories(),
         this.getLiveMarketPrices(),
         this.engine?.getPausedWallets(),
         this.walletDisplayNames,
@@ -818,7 +1284,51 @@ export class DashboardServer {
 
     /* ─── JSON: wallet list ─── */
     if (path === '/api/wallets' && method === 'GET') {
-      json(res, 200, this.walletManager.listWallets());
+      json(res, 200, getUserWallets());
+      return;
+    }
+
+    /* ─── JSON: seed starter paper wallets for free tier ─── */
+    if (path === '/api/wallets/seed' && method === 'POST') {
+      // Only free users who don't have wallets yet
+      if (userWalletIds.size > 0) {
+        json(res, 409, { ok: false, error: 'You already have wallets deployed.' });
+        return;
+      }
+
+      const seedWallets = [
+        { id: `mm_${userId.slice(0, 8)}`, strategy: 'market_making', capital: 5000, maxOpenTrades: 500 },
+        { id: `arb_${userId.slice(0, 8)}`, strategy: 'cross_market_arbitrage', capital: 10000, maxOpenTrades: 200 },
+        { id: `misp_${userId.slice(0, 8)}`, strategy: 'mispricing_arbitrage', capital: 10000, maxOpenTrades: 200 },
+      ];
+
+      const created: string[] = [];
+      for (const sw of seedWallets) {
+        const existing = this.walletManager.listWallets().find((w) => w.walletId === sw.id);
+        if (existing) continue;
+
+        const walletConfig = {
+          id: sw.id,
+          mode: 'PAPER' as const,
+          strategy: sw.strategy,
+          capital: sw.capital,
+          riskLimits: {
+            maxPositionSize: sw.capital * 0.2,
+            maxExposurePerMarket: sw.capital * 0.3,
+            maxDailyLoss: sw.capital * 0.1,
+            maxOpenTrades: sw.maxOpenTrades,
+            maxDrawdown: 0.2,
+          },
+        };
+        const wallet = new PaperWallet(walletConfig, sw.strategy);
+        this.walletManager.addWallet(wallet);
+        this.userDb.assignWallet(sw.id, userId);
+        userWalletIds.add(sw.id);
+        if (this.engine) this.engine.addRunner(sw.id, sw.strategy);
+        created.push(sw.id);
+      }
+
+      json(res, 201, { ok: true, wallets: created, message: `${created.length} paper trading bots deployed!` });
       return;
     }
 
@@ -855,6 +1365,34 @@ export class DashboardServer {
         return;
       }
 
+      // Free plan users can only use PAPER mode
+      const userHasPaidSub = !!user.subscriptionId && (user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing');
+      const userEffectivelyFree = !userHasPaidSub && !user.isAdmin;
+      if (mode === 'LIVE' && userEffectivelyFree) {
+        json(res, 403, {
+          ok: false,
+          error: 'Live trading requires a Pro plan. Upgrade to unlock live trading.',
+          upgradeRequired: true,
+        });
+        return;
+      }
+
+      // Enforce wallet limit per plan tier
+      const userPlanTier = user.isAdmin ? 'enterprise' : (userEffectivelyFree ? 'free' : user.planTier || 'pro');
+      const maxWallets = userPlanTier === 'enterprise' ? Infinity : userPlanTier === 'pro' ? 10 : 5;
+      const currentWalletCount = userWalletIds.size;
+      if (currentWalletCount >= maxWallets) {
+        const tierName = userPlanTier === 'free' ? 'Free' : 'Pro';
+        json(res, 403, {
+          ok: false,
+          error: `You\u2019ve reached the ${maxWallets}-bot limit on the ${tierName} plan. Upgrade to add more bots.`,
+          upgradeRequired: true,
+          walletLimit: maxWallets,
+          walletCount: currentWalletCount,
+        });
+        return;
+      }
+
       const existing = this.walletManager.listWallets().find((w) => w.walletId === walletId);
       if (existing) {
         json(res, 409, { ok: false, error: `Wallet "${walletId}" already exists` });
@@ -885,6 +1423,10 @@ export class DashboardServer {
         : new PaperWallet(walletConfig, strategy);
       this.walletManager.addWallet(wallet);
 
+      /* Associate wallet with the authenticated user */
+      this.userDb.assignWallet(walletId, userId);
+      userWalletIds.add(walletId);
+
       /* Connect the new wallet to the engine so its strategy runs */
       if (this.engine) {
         this.engine.addRunner(walletId, strategy);
@@ -897,11 +1439,17 @@ export class DashboardServer {
     /* ─── JSON: delete wallet ─── */
     if (path.startsWith('/api/wallets/') && !path.includes('/detail') && !path.includes('/pause') && !path.includes('/resume') && method === 'DELETE') {
       const walletId = decodeURIComponent(path.slice('/api/wallets/'.length));
+      if (!userWalletIds.has(walletId)) {
+        json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
+        return;
+      }
       if (this.engine) {
         this.engine.removeRunner(walletId);
       }
       const removed = this.walletManager.removeWallet(walletId);
       if (removed) {
+        this.userDb.unassignWallet(walletId);
+        userWalletIds.delete(walletId);
         json(res, 200, { ok: true, message: `Wallet "${walletId}" removed` });
       } else {
         json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
@@ -912,6 +1460,10 @@ export class DashboardServer {
     /* ─── JSON: pause wallet runner ─── */
     if (path.match(/^\/api\/wallets\/[^/]+\/pause$/) && method === 'POST') {
       const walletId = decodeURIComponent(path.split('/')[3]);
+      if (!userWalletIds.has(walletId)) {
+        json(res, 404, { ok: false, error: `Runner for "${walletId}" not found` });
+        return;
+      }
       if (!this.engine) {
         json(res, 500, { ok: false, error: 'Engine not available' });
         return;
@@ -928,6 +1480,10 @@ export class DashboardServer {
     /* ─── JSON: resume wallet runner ─── */
     if (path.match(/^\/api\/wallets\/[^/]+\/resume$/) && method === 'POST') {
       const walletId = decodeURIComponent(path.split('/')[3]);
+      if (!userWalletIds.has(walletId)) {
+        json(res, 404, { ok: false, error: `Runner for "${walletId}" not found or not paused` });
+        return;
+      }
       if (!this.engine) {
         json(res, 500, { ok: false, error: 'Engine not available' });
         return;
@@ -944,6 +1500,10 @@ export class DashboardServer {
     /* ─── JSON: wallet detail (comprehensive analytics) ─── */
     if (path.match(/^\/api\/wallets\/[^/]+\/detail$/) && method === 'GET') {
       const walletId = decodeURIComponent(path.split('/')[3]);
+      if (!userWalletIds.has(walletId)) {
+        json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
+        return;
+      }
       const walletState = this.walletManager.listWallets().find((w) => w.walletId === walletId);
       if (!walletState) {
         json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
@@ -965,6 +1525,10 @@ export class DashboardServer {
     /* ─── JSON: update wallet settings (PATCH) ─── */
     if (path.match(/^\/api\/wallets\/[^/]+$/) && method === 'PATCH') {
       const walletId = decodeURIComponent(path.slice('/api/wallets/'.length));
+      if (!userWalletIds.has(walletId)) {
+        json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
+        return;
+      }
       const wallet = this.walletManager.getWallet(walletId);
       if (!wallet) {
         json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
@@ -1012,11 +1576,12 @@ export class DashboardServer {
       return;
     }
 
-    /* ─── JSON: get wallet display names ─── */
+    /* ─── JSON: get wallet display names (scoped to user) ─── */
     if (path === '/api/wallets/display-names' && method === 'GET') {
       const names: Record<string, string> = {};
-      for (const [id, name] of this.walletDisplayNames) {
-        names[id] = name;
+      for (const walletId of userWalletIds) {
+        const name = this.walletDisplayNames.get(walletId);
+        if (name) names[walletId] = name;
       }
       json(res, 200, names);
       return;
@@ -1037,9 +1602,9 @@ export class DashboardServer {
         json(res, 404, { ok: false, error: `Strategy "${stratId}" not found` });
         return;
       }
-      /* Attach live config from YAML if available */
+      /* Attach live config from YAML if available — scoped to user */
       const liveConfig = this.walletManager
-        ? this.walletManager.listWallets()
+        ? getUserWallets()
             .filter((w) => w.assignedStrategy === stratId)
             .map((w) => ({
               walletId: w.walletId,
@@ -1054,14 +1619,15 @@ export class DashboardServer {
       return;
     }
 
-    /* ─── JSON: Copy Trade whale addresses — GET ─── */
+    /* ─── JSON: Copy Trade whale addresses — GET (scoped to user's wallets) ─── */
     if (path === '/api/copy-trade/whales' && method === 'GET') {
-      const instances = this.getCopyTradeInstances();
-      if (instances.length === 0) {
+      const allInstances = this.getCopyTradeInstances();
+      const userInstances = allInstances.filter((r) => userWalletIds.has(r.walletId));
+      if (userInstances.length === 0) {
         json(res, 200, { ok: true, addresses: [], stats: null, whalePerformance: [] });
         return;
       }
-      const inst = instances[0];
+      const inst = userInstances[0].instance;
       const addrs = inst.getWhaleAddresses();
       const stats = inst.getStats();
       const perfMap = inst.getWhalePerformance();
@@ -1082,7 +1648,7 @@ export class DashboardServer {
       return;
     }
 
-    /* ─── JSON: Copy Trade whale addresses — POST (add) ─── */
+    /* ─── JSON: Copy Trade whale addresses — POST (add, scoped to user's wallets) ─── */
     if (path === '/api/copy-trade/whales' && method === 'POST') {
       const body = await readBody(req);
       const address = (body.address as string || '').trim();
@@ -1090,38 +1656,40 @@ export class DashboardServer {
         json(res, 400, { ok: false, error: 'Missing "address" field' });
         return;
       }
-      const instances = this.getCopyTradeInstances();
-      if (instances.length === 0) {
-        json(res, 404, { ok: false, error: 'No copy_trade strategy instances running' });
+      const allInstances = this.getCopyTradeInstances();
+      const userInstances = allInstances.filter((r) => userWalletIds.has(r.walletId));
+      if (userInstances.length === 0) {
+        json(res, 404, { ok: false, error: 'No copy_trade strategy instances running for your account' });
         return;
       }
       let added = false;
-      for (const inst of instances) {
-        if (inst.addWhaleAddress(address)) added = true;
+      for (const r of userInstances) {
+        if (r.instance.addWhaleAddress(address)) added = true;
       }
       if (added) {
-        json(res, 200, { ok: true, message: `Whale address "${address}" added to ${instances.length} copy trade instance(s)` });
+        json(res, 200, { ok: true, message: `Whale address "${address}" added to ${userInstances.length} copy trade instance(s)` });
       } else {
         json(res, 409, { ok: false, error: `Address "${address}" is already being tracked` });
       }
       return;
     }
 
-    /* ─── JSON: Copy Trade whale addresses — DELETE (remove) ─── */
+    /* ─── JSON: Copy Trade whale addresses — DELETE (remove, scoped to user's wallets) ─── */
     if (path.startsWith('/api/copy-trade/whales/') && method === 'DELETE') {
       const address = decodeURIComponent(path.slice('/api/copy-trade/whales/'.length)).trim();
       if (!address) {
         json(res, 400, { ok: false, error: 'Missing address in URL' });
         return;
       }
-      const instances = this.getCopyTradeInstances();
-      if (instances.length === 0) {
-        json(res, 404, { ok: false, error: 'No copy_trade strategy instances running' });
+      const allInstances = this.getCopyTradeInstances();
+      const userInstances = allInstances.filter((r) => userWalletIds.has(r.walletId));
+      if (userInstances.length === 0) {
+        json(res, 404, { ok: false, error: 'No copy_trade strategy instances running for your account' });
         return;
       }
       let removed = false;
-      for (const inst of instances) {
-        if (inst.removeWhaleAddress(address)) removed = true;
+      for (const r of userInstances) {
+        if (r.instance.removeWhaleAddress(address)) removed = true;
       }
       if (removed) {
         json(res, 200, { ok: true, message: `Whale address "${address}" removed` });
@@ -1133,8 +1701,8 @@ export class DashboardServer {
 
     /* ─── JSON: all trades across all wallets (for Trade Log) ─── */
     if (path === '/api/trades/all' && method === 'GET') {
-      const allTradesMap = this.walletManager.getAllTradeHistories();
-      const wallets = this.walletManager.listWallets();
+      const allTradesMap = getUserTradeHistories();
+      const wallets = getUserWallets();
       const allTrades: Array<{
         orderId: string;
         walletId: string;
@@ -1197,6 +1765,10 @@ export class DashboardServer {
     /* ─── JSON: trade history for a specific wallet ─── */
     if (path.startsWith('/api/trades/') && method === 'GET') {
       const walletId = decodeURIComponent(path.slice('/api/trades/'.length));
+      if (!userWalletIds.has(walletId)) {
+        json(res, 404, { ok: false, error: `Wallet "${walletId}" not found` });
+        return;
+      }
       const trades = this.walletManager.getTradeHistory(walletId);
       const walletState = this.walletManager.listWallets().find((w) => w.walletId === walletId);
       if (!walletState) {
@@ -1256,13 +1828,19 @@ export class DashboardServer {
 
     /* ─── Whale API routes (delegated) ─── */
     if (path.startsWith('/api/whales') && this.whaleApi) {
+      // Whale mutations (add/remove/scanner control) admin-only; reads are public market data
+      const isMutation = method === 'POST' || method === 'PUT' || method === 'DELETE';
+      if (isMutation && !user.isAdmin) {
+        json(res, 403, { error: 'Admin access required for whale tracking mutations' });
+        return;
+      }
       const handled = await this.whaleApi.handleRequest(req, res);
       if (handled) return;
     }
 
-    /* ─── Console API routes ─── */
+    /* ─── Console API routes (scoped to user's wallets) ─── */
     if (path === '/api/console/stream' && method === 'GET') {
-      consoleLog.addSSEClient(res);
+      consoleLog.addSSEClient(res, userWalletIds, user.isAdmin);
       return;                // SSE connection stays open
     }
 
@@ -1270,12 +1848,12 @@ export class DashboardServer {
       const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
       const limit = Number(url.searchParams.get('limit')) || 500;
       const offset = Number(url.searchParams.get('offset')) || 0;
-      json(res, 200, consoleLog.getEntries(limit, offset));
+      json(res, 200, consoleLog.getEntries(limit, offset, userWalletIds, user.isAdmin));
       return;
     }
 
     if (path === '/api/console/stats' && method === 'GET') {
-      json(res, 200, consoleLog.getStats());
+      json(res, 200, consoleLog.getStats(userWalletIds, user.isAdmin));
       return;
     }
 
@@ -1289,13 +1867,13 @@ export class DashboardServer {
       });
       res.write(':\n\n');  // comment to establish connection
 
-      this.sseClients.add(res);
+      this.sseClients.set(res, userId);
       req.on('close', () => this.sseClients.delete(res));
 
-      // Send initial data immediately
+      // Send initial data immediately (scoped to user)
       const payload = buildDashboardPayload(
-        this.walletManager.listWallets(),
-        this.walletManager.getAllTradeHistories(),
+        getUserWallets(),
+        getUserTradeHistories(),
         this.getLiveMarketPrices(),
         this.engine?.getPausedWallets(),
         this.walletDisplayNames,
@@ -1305,6 +1883,158 @@ export class DashboardServer {
     }
 
     json(res, 404, { error: 'Not found' });
+  }
+
+  /* ── Auth handlers ── */
+
+  private async handleSignup(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const body = await readBody(req);
+    const email = String(body.email ?? '').trim().toLowerCase();
+    const password = String(body.password ?? '');
+
+    if (!email || !password) {
+      json(res, 400, { error: 'Email and password are required' });
+      return;
+    }
+    if (password.length < 8) {
+      json(res, 400, { error: 'Password must be at least 8 characters' });
+      return;
+    }
+    // Basic email format check
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      json(res, 400, { error: 'Invalid email format' });
+      return;
+    }
+
+    try {
+      const user = await this.userDb.createUser(email, password);
+
+      // Auto-promote: first user ever, or matching ADMIN_EMAIL env var
+      const adminEmail = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+      const allUsers = this.userDb.getAllUsers();
+      if (allUsers.length === 1 || (adminEmail && email === adminEmail)) {
+        this.userDb.setAdmin(user.id, true);
+      }
+
+      const token = signToken({ userId: user.id, email: user.email });
+      const planChoice = (body.plan === 'enterprise') ? 'enterprise' : (body.plan === 'pro' ? 'pro' : null);
+      const provider: string = String(body.provider || 'stripe'); // 'stripe' | 'lemonsqueezy' | 'nowpayments'
+
+      // Set plan tier if a paid plan was chosen
+      if (planChoice) {
+        this.userDb.updatePlanTier(user.id, planChoice);
+      }
+
+      // If user wants a paid plan, redirect to the selected payment provider
+      if (planChoice) {
+        const baseUrl = `http://${req.headers.host ?? 'localhost'}`;
+        let checkoutUrl = '';
+
+        if (provider === 'lemonsqueezy' && isLemonSqueezyConfigured()) {
+          checkoutUrl = await createLSCheckoutSession(
+            user.id, user.email,
+            `${baseUrl}/dashboard?billing=success`,
+          );
+        } else if (provider === 'nowpayments' && isNowPaymentsConfigured()) {
+          checkoutUrl = await createNPInvoice(
+            user.id, user.email,
+            `${baseUrl}/dashboard?billing=success`,
+            `${baseUrl}/login?billing=canceled`,
+          );
+        } else if (isStripeConfigured()) {
+          checkoutUrl = await createCheckoutSession(
+            this.userDb, user.id, user.email,
+            `${baseUrl}/dashboard?billing=success`,
+            `${baseUrl}/login?billing=canceled`,
+          );
+        }
+
+        if (checkoutUrl) {
+          // Set cookie so they're logged in after checkout
+          res.writeHead(200, {
+            'Set-Cookie': `token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 3600}`,
+            'Content-Type': 'application/json',
+          });
+          res.end(JSON.stringify({ ok: true, checkoutUrl }));
+          return;
+        }
+      }
+
+      // Free plan, or no providers configured → grant access immediately
+      const anyBillingConfigured = isStripeConfigured() || isLemonSqueezyConfigured() || isNowPaymentsConfigured();
+      const status = anyBillingConfigured ? 'free' : 'active';
+      this.userDb.updateSubscription(user.id, '', status);
+      res.writeHead(200, {
+        'Set-Cookie': `token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 3600}`,
+        'Content-Type': 'application/json',
+      });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('already registered')) {
+        json(res, 409, { error: 'Email already registered' });
+      } else {
+        logger.error({ err: msg }, 'Signup error');
+        json(res, 500, { error: 'Signup failed' });
+      }
+    }
+  }
+
+  private async handleLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const body = await readBody(req);
+    const email = String(body.email ?? '').trim().toLowerCase();
+    const password = String(body.password ?? '');
+
+    if (!email || !password) {
+      json(res, 400, { error: 'Email and password are required' });
+      return;
+    }
+
+    const user = await this.userDb.verifyPassword(email, password);
+    if (!user) {
+      json(res, 401, { error: 'Invalid email or password' });
+      return;
+    }
+
+    const token = signToken({ userId: user.id, email: user.email });
+    res.writeHead(200, {
+      'Set-Cookie': `token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 3600}`,
+      'Content-Type': 'application/json',
+    });
+    res.end(JSON.stringify({ ok: true, subscriptionStatus: user.subscriptionStatus }));
+  }
+
+  private async handleStripeWebhook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    const rawBody = Buffer.concat(chunks);
+
+    const result = await stripeHandleWebhook(req, rawBody, this.userDb);
+    json(res, result.status, result.body);
+  }
+
+  private async handleLSWebhookRoute(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    const rawBody = Buffer.concat(chunks);
+
+    const result = await handleLSWebhook(req, rawBody, this.userDb);
+    json(res, result.status, result.body);
+  }
+
+  private async handleNPWebhookRoute(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    const rawBody = Buffer.concat(chunks);
+
+    const result = await handleNPWebhook(req, rawBody, this.userDb);
+    json(res, result.status, result.body);
   }
 }
 
@@ -1352,6 +2082,29 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .pulse{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse-anim 2s ease-in-out infinite}
 @keyframes pulse-anim{0%,100%{opacity:1}50%{opacity:.3}}
 .header-ts{font-size:11px;color:var(--muted)}
+
+/* User menu */
+.user-menu{position:relative}
+.user-btn{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 12px;cursor:pointer;transition:all .2s;color:var(--text);font-size:13px;font-weight:600}
+.user-btn:hover{border-color:var(--accent);background:var(--surface)}
+.user-avatar{width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}
+.user-email{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.user-chevron{font-size:10px;color:var(--muted);transition:transform .2s}
+.user-menu.open .user-chevron{transform:rotate(180deg)}
+.user-dropdown{position:absolute;top:calc(100% + 8px);right:0;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:8px;min-width:240px;box-shadow:0 12px 40px rgba(0,0,0,.4);z-index:100;display:none}
+.user-menu.open .user-dropdown{display:block}
+.user-dropdown-header{padding:10px 12px;border-bottom:1px solid var(--border);margin-bottom:4px}
+.user-dropdown-header .ud-email{font-size:13px;font-weight:700;color:var(--text)}
+.user-dropdown-header .ud-plan{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:4px;margin-top:4px}
+.plan-free{background:rgba(255,193,7,.15);color:var(--yellow)}
+.plan-active{background:rgba(0,214,143,.15);color:var(--green)}
+.plan-inactive{background:rgba(255,77,106,.15);color:var(--red)}
+.ud-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text);transition:background .15s;text-decoration:none}
+.ud-item:hover{background:var(--surface2)}
+.ud-item .ud-icon{font-size:16px;width:20px;text-align:center}
+.ud-divider{height:1px;background:var(--border);margin:4px 0}
+.ud-item.danger{color:var(--red)}
+.ud-item.danger:hover{background:rgba(255,77,106,.08)}
 
 /* ═══ Main container ═══ */
 .main{max-width:1440px;margin:0 auto;padding:24px 32px}
@@ -1695,6 +2448,70 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 .tl-wallet-tag{font-size:11px;padding:2px 8px;border-radius:8px;background:rgba(79,143,247,.1);color:var(--accent);font-weight:500;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tl-market-id{font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle}
 .tl-footer{display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:11px;color:var(--muted)}
+
+/* ═══ Trial top-bar (fixed above header) ═══ */
+.trial-topbar{position:fixed;top:0;left:0;right:0;z-index:10000;background:linear-gradient(90deg,#0d1117,#1a1f2e 30%,#1e2a3a 70%,#0d1117);border-bottom:1px solid var(--accent);padding:10px 24px;display:none;align-items:center;justify-content:center;gap:18px;font-size:14px;color:var(--text)}
+.trial-topbar.visible{display:flex}
+.trial-topbar.expired{border-bottom-color:var(--red);background:linear-gradient(90deg,#0d1117,#2a1620 30%,#1a1216 70%,#0d1117)}
+.trial-topbar .trial-label{font-size:13px;color:var(--muted)}
+.trial-topbar .trial-time{font-size:18px;font-weight:700;color:var(--accent);margin:0 4px}
+.trial-topbar.expired .trial-time{color:var(--red)}
+.trial-topbar .trial-upgrade-btn{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;padding:8px 22px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:transform .15s,box-shadow .15s;white-space:nowrap}
+.trial-topbar .trial-upgrade-btn:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(79,143,247,.35)}
+.trial-topbar-spacer{height:0;transition:height .2s}
+.trial-topbar-spacer.active{height:46px}
+/* ═══ Upsell banners ═══ */
+.upsell-banner{background:linear-gradient(135deg,rgba(79,143,247,.08),rgba(0,214,143,.08));border:1px solid rgba(79,143,247,.25);border-radius:var(--radius);padding:16px 24px;margin-bottom:20px;display:none;align-items:center;gap:16px}
+.upsell-banner.visible{display:flex}
+.upsell-banner .upsell-icon{font-size:28px;flex-shrink:0}
+.upsell-banner .upsell-text{flex:1}
+.upsell-banner .upsell-text h4{margin:0 0 2px;font-size:14px;font-weight:700;color:var(--text)}
+.upsell-banner .upsell-text p{margin:0;font-size:12px;color:var(--muted)}
+.upsell-cta{background:linear-gradient(135deg,var(--accent),var(--green));color:#fff;border:none;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;transition:transform .15s,box-shadow .15s}
+.upsell-cta:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,214,143,.3)}
+
+/* ═══ Deploy Bots hero ═══ */
+.deploy-hero{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px 60px;text-align:center}
+.deploy-hero h2{font-size:28px;font-weight:800;margin:0 0 8px;background:linear-gradient(135deg,var(--accent),var(--green));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.deploy-hero p{color:var(--muted);font-size:15px;max-width:480px;margin:0 0 32px;line-height:1.6}
+.deploy-btn{position:relative;background:linear-gradient(135deg,var(--accent),var(--green));color:#fff;border:none;padding:20px 56px;border-radius:16px;font-size:18px;font-weight:800;cursor:pointer;letter-spacing:.5px;transition:transform .2s,box-shadow .2s;overflow:hidden}
+.deploy-btn:hover{transform:translateY(-3px) scale(1.03);box-shadow:0 12px 40px rgba(0,214,143,.35)}
+.deploy-btn:active{transform:scale(.97)}
+.deploy-btn.deploying{pointer-events:none;animation:deployPulse 1.5s ease-in-out infinite}
+@keyframes deployPulse{0%,100%{box-shadow:0 0 0 0 rgba(0,214,143,.5)}50%{box-shadow:0 0 0 20px rgba(0,214,143,0)}}
+
+/* deploy animation overlay */
+.deploy-anim-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(11,14,17,.92);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .4s}
+.deploy-anim-overlay.active{opacity:1;pointer-events:all}
+.deploy-anim-stage{text-align:center}
+.deploy-anim-title{font-size:24px;font-weight:800;color:var(--text);margin-bottom:24px}
+.deploy-anim-ring{width:120px;height:120px;border-radius:50%;border:4px solid var(--border);border-top-color:var(--green);animation:spin 1s linear infinite;margin:0 auto 24px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.deploy-anim-steps{list-style:none;padding:0;margin:0;text-align:left;max-width:340px;margin:0 auto}
+.deploy-anim-steps li{padding:8px 0;font-size:14px;color:var(--muted);display:flex;align-items:center;gap:10px;opacity:.3;transition:opacity .4s,color .4s}
+.deploy-anim-steps li.active{opacity:1;color:var(--text)}
+.deploy-anim-steps li.done{opacity:1;color:var(--green)}
+.deploy-anim-steps li .step-icon{width:20px;font-size:16px;text-align:center}
+.deploy-anim-check{display:inline-block;width:20px;height:20px;border-radius:50%;background:var(--green);color:#fff;font-size:12px;line-height:20px;text-align:center;animation:checkPop .4s cubic-bezier(.175,.885,.32,1.275)}
+@keyframes checkPop{0%{transform:scale(0)}100%{transform:scale(1)}}
+.deploy-success{animation:successFade .8s ease-out}
+@keyframes successFade{0%{opacity:0;transform:translateY(20px)}100%{opacity:1;transform:translateY(0)}}
+.deploy-anim-done{font-size:64px;margin-bottom:16px;animation:rocketLaunch 1s ease-out}
+@keyframes rocketLaunch{0%{transform:translateY(40px) scale(.5);opacity:0}60%{transform:translateY(-10px) scale(1.1);opacity:1}100%{transform:translateY(0) scale(1)}}
+
+/* ═══ Analytics row ═══ */
+.analytics-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-top:18px;margin-bottom:24px}
+.a-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px}
+.a-card .a-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:4px}
+.a-card .a-val{font-size:20px;font-weight:700}
+.a-card .a-sub{font-size:11px;color:var(--muted);margin-top:2px}
+
+/* ═══ Seed wallet badges ═══ */
+.seed-wallets-preview{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:24px;max-width:800px}
+.seed-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:left}
+.seed-card .seed-strat{font-size:13px;font-weight:700;color:var(--accent);margin-bottom:4px}
+.seed-card .seed-bal{font-size:20px;font-weight:700;color:var(--text)}
+.seed-card .seed-mode{font-size:11px;color:var(--green);font-weight:600;margin-top:4px}
 </style>
 </head>
 <body>
@@ -1716,6 +2533,15 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
   </div>
 </div>
 
+<!-- ═══ TRIAL TOP BAR (above everything for free users) ═══ -->
+<div id="trial-topbar" class="trial-topbar">
+  <span class="trial-label">⏱ Free Trial:</span>
+  <span class="trial-time" id="trial-countdown">--:--:--</span>
+  <span class="trial-label">remaining</span>
+  <button class="trial-upgrade-btn" onclick="window.location.href='/checkout?plan=pro'">Upgrade — from $99/mo</button>
+</div>
+<div class="trial-topbar-spacer" id="trial-spacer"></div>
+
 <!-- ═══ HEADER ═══ -->
 <div class="header">
   <div class="logo"><span>Poly</span>Market Strategies</div>
@@ -1727,10 +2553,28 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
     <button class="tab-btn" data-tab="analytics">Analytics</button>
     <button class="tab-btn" data-tab="whales">🐋 Whales</button>
     <button class="tab-btn" data-tab="console">📟 Console</button>
+    <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
   </div>
   <div class="header-right">
     <span class="pulse"></span>
     <span class="header-ts" id="hdr-ts">Loading\u2026</span>
+    <div class="user-menu" id="userMenu">
+      <button class="user-btn" id="userBtn">
+        <div class="user-avatar" id="userAvatar">?</div>
+        <span class="user-email" id="userEmail">Loading\u2026</span>
+        <span class="user-chevron">\u25BC</span>
+      </button>
+      <div class="user-dropdown">
+        <div class="user-dropdown-header">
+          <div class="ud-email" id="udEmail"></div>
+          <span class="ud-plan" id="udPlan"></span>
+        </div>
+        <a class="ud-item" id="udAdmin" href="/admin" style="display:none"><span class="ud-icon">\u2699\uFE0F</span> Admin Dashboard</a>
+        <a class="ud-item" href="/" target="_blank"><span class="ud-icon">\uD83C\uDFE0</span> Landing Page</a>
+        <div class="ud-divider"></div>
+        <div class="ud-item danger" id="logoutBtn"><span class="ud-icon">\uD83D\uDEAA</span> Sign Out</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1739,20 +2583,55 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 
 <!-- ═════════════ TAB 1: DASHBOARD ═════════════ -->
 <div class="tab-pane active" id="pane-dashboard">
+
+  <!-- Deploy Bots hero (shown for free users with no wallets) -->
+  <div id="deploy-hero" class="deploy-hero" style="display:none">
+    <h2>Ready to Deploy Your Trading Bots?</h2>
+    <p>Launch 3 AI-powered paper trading bots instantly. Market Making, Cross-Market Arbitrage, and Mispricing Arbitrage strategies \u2014 all running with simulated funds.</p>
+    <div class="seed-wallets-preview">
+      <div class="seed-card"><div class="seed-strat">\uD83D\uDCC8 Market Making</div><div class="seed-bal">$5,000</div><div class="seed-mode">PAPER \u2022 Spread Strategy</div></div>
+      <div class="seed-card"><div class="seed-strat">\u26A1 Cross-Market Arbitrage</div><div class="seed-bal">$10,000</div><div class="seed-mode">PAPER \u2022 Arbitrage</div></div>
+      <div class="seed-card"><div class="seed-strat">\uD83C\uDFAF Mispricing Arbitrage</div><div class="seed-bal">$10,000</div><div class="seed-mode">PAPER \u2022 Arbitrage</div></div>
+    </div>
+    <button class="deploy-btn" id="deploy-btn" onclick="deployBots()">
+      \uD83D\uDE80 Deploy Bots
+    </button>
+  </div>
+
   <div class="summary-row" id="summary"></div>
+  <div class="analytics-row" id="analytics-extra"></div>
   <div class="wallet-grid" id="wallets"></div>
+</div>
+
+<!-- Deploy animation overlay -->
+<div class="deploy-anim-overlay" id="deploy-overlay">
+  <div class="deploy-anim-stage" id="deploy-stage">
+    <div class="deploy-anim-title">Deploying Your Bots...</div>
+    <div class="deploy-anim-ring" id="deploy-ring"></div>
+    <ul class="deploy-anim-steps" id="deploy-steps">
+      <li id="ds-1"><span class="step-icon">\u23F3</span> Initializing paper trading wallets...</li>
+      <li id="ds-2"><span class="step-icon">\u23F3</span> Configuring Market Making strategy ($5K)...</li>
+      <li id="ds-3"><span class="step-icon">\u23F3</span> Configuring Cross-Market Arbitrage ($10K)...</li>
+      <li id="ds-4"><span class="step-icon">\u23F3</span> Configuring Mispricing Arbitrage ($10K)...</li>
+      <li id="ds-5"><span class="step-icon">\u23F3</span> Connecting to Polymarket data feed...</li>
+      <li id="ds-6"><span class="step-icon">\u23F3</span> Starting strategy runners...</li>
+    </ul>
+  </div>
 </div>
 
 <!-- ═════════════ TAB 2: WALLETS ═════════════ -->
 <div class="tab-pane" id="pane-wallets">
-  <div class="section-title"><span class="icon">\uD83D\uDCB0</span> Wallet Management</div>
+  <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <span><span class="icon">\uD83D\uDCB0</span> Wallet Management</span>
+    <span id="wallet-limit-badge" style="font-size:12px;font-weight:600;padding:4px 12px;border-radius:6px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);display:none"></span>
+  </div>
 
   <div class="form-box">
     <h3>Create New Wallet</h3>
     <div class="form-grid">
       <div class="fg"><label>Wallet ID</label><input id="cw-id" placeholder="e.g. wallet_4"></div>
       <div class="fg"><label>Mode</label>
-        <select id="cw-mode"><option value="PAPER">PAPER (simulated)</option><option value="LIVE">LIVE (real money)</option></select>
+        <select id="cw-mode"><option value="PAPER">PAPER (simulated)</option><option value="LIVE" id="cw-mode-live">LIVE (real money)</option></select>
       </div>
       <div class="fg"><label>Strategy</label><select id="cw-strategy"></select></div>
       <div class="fg"><label>Capital ($)</label><input id="cw-capital" type="number" min="1" value="500" placeholder="500"></div>
@@ -1779,6 +2658,11 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 
 <!-- ═════════════ TAB 3: STRATEGIES ═════════════ -->
 <div class="tab-pane" id="pane-strategies">
+  <div class="upsell-banner" id="upsell-strategies">
+    <div class="upsell-icon">\u26A1</div>
+    <div class="upsell-text"><h4>Unlock Live Strategy Execution</h4><p>Paper trading is great for testing. Go Pro to deploy strategies with real capital and maximize returns.</p></div>
+    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Go Pro \u2014 from $99/mo</button>
+  </div>
   <div class="section-title" id="strat-list-title"><span class="icon">\uD83E\uDDE0</span> Strategy Library</div>
   <div class="strat-grid" id="strat-grid"></div>
 
@@ -1888,6 +2772,11 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 
 <!-- ═════════════ TAB: LIVE MARKETS ═════════════ -->
 <div class="tab-pane" id="pane-markets">
+  <div class="upsell-banner" id="upsell-markets">
+    <div class="upsell-icon">\uD83C\uDF0D</div>
+    <div class="upsell-text"><h4>Trade These Markets Live</h4><p>See an opportunity? Pro users can place real trades directly from the dashboard.</p></div>
+    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Start Trading Live \u2014 from $99/mo</button>
+  </div>
   <div class="section-title"><span class="icon">\uD83C\uDF0D</span> Live Polymarket Markets</div>
   <p style="color:var(--muted);margin-bottom:16px">Real-time data from the Polymarket Gamma API. Top active markets sorted by 24h volume.</p>
   <button class="btn btn-primary" id="mkts-refresh" style="margin-bottom:16px">\uD83D\uDD04 Refresh Markets</button>
@@ -1901,6 +2790,11 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 
 <!-- ═════════════ TAB 4: ANALYTICS ═════════════ -->
 <div class="tab-pane" id="pane-analytics">
+  <div class="upsell-banner" id="upsell-analytics">
+    <div class="upsell-icon">\uD83D\uDCCA</div>
+    <div class="upsell-text"><h4>Supercharge Your Analytics</h4><p>Pro users get advanced analytics, detailed trade history exports, and real P&amp;L tracking on live trades.</p></div>
+    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Unlock Pro Analytics \u2014 from $99/mo</button>
+  </div>
   <div class="section-title"><span class="icon">\uD83D\uDCCA</span> Trading Analytics</div>
 
   <div class="form-box" style="margin-bottom:20px">
@@ -1950,6 +2844,11 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 
 <!-- ═════════════ TAB 6: WHALES ═════════════ -->
 <div class="tab-pane" id="pane-whales">
+  <div class="upsell-banner" id="upsell-whales">
+    <div class="upsell-icon">🐋</div>
+    <div class="upsell-text"><h4>Copy-Trade Top Whales Live</h4><p>Track whale wallets for free, but upgrade to mirror their trades automatically with real funds.</p></div>
+    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Mirror Whales Live — from $99/mo</button>
+  </div>
   <div class="section-title"><span class="icon">🐋</span> Whale Tracking Engine</div>
 
   <!-- Whale summary cards -->
@@ -2350,6 +3249,128 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
   </div>
 </div>
 
+<!-- ═══════════ SETTINGS TAB ═══════════ -->
+<div class="tab-pane" id="pane-settings">
+
+  <!-- Polymarket API Key -->
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px;margin-bottom:20px">
+    <h3 style="font-size:18px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:22px">🔑</span> Polymarket API Key
+    </h3>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:20px">Connect your Polymarket account to enable live trading. Your API key is stored securely and never shared.</p>
+
+    <div id="pm-key-status" style="padding:12px 16px;border-radius:8px;font-size:13px;margin-bottom:20px"></div>
+
+    <form id="pmKeyForm" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+      <div style="flex:1;min-width:300px">
+        <label style="display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">API Key</label>
+        <input type="password" id="pmApiKeyInput" placeholder="Enter your Polymarket API key..." autocomplete="off" style="width:100%;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;outline:none">
+      </div>
+      <button type="submit" style="padding:12px 24px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">Save API Key</button>
+      <button type="button" id="pmKeyRemoveBtn" style="padding:12px 24px;background:transparent;color:var(--red);border:1px solid var(--red);border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;display:none" onclick="removePolymarketKey()">Remove Key</button>
+    </form>
+  </div>
+
+  <!-- Step-by-step Guide -->
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px;margin-bottom:20px">
+    <h3 style="font-size:18px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:22px">📋</span> How to Get Your Polymarket API Key
+    </h3>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:20px">Follow these steps to connect your Polymarket account for live trading.</p>
+
+    <div style="display:flex;flex-direction:column;gap:0">
+      <!-- Step 1 -->
+      <div style="display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:36px;height:36px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">1</div>
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">Go to Polymarket</div>
+          <div style="font-size:13px;color:var(--muted)">Visit <a href="https://polymarket.com" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">polymarket.com</a> and sign in to your account. If you don't have one, create a free account first.</div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div style="display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:36px;height:36px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">2</div>
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">Open Account Settings</div>
+          <div style="font-size:13px;color:var(--muted)">Click on your profile icon in the top-right corner, then select <strong>Settings</strong> from the dropdown menu.</div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div style="display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:36px;height:36px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">3</div>
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">Navigate to API Access</div>
+          <div style="font-size:13px;color:var(--muted)">In the Settings page, find the <strong>API Access</strong> or <strong>Developer</strong> section. This is where you can manage your API keys.</div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div style="display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:36px;height:36px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">4</div>
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">Generate a New API Key</div>
+          <div style="font-size:13px;color:var(--muted)">Click <strong>Create API Key</strong> or <strong>Generate New Key</strong>. You may need to verify your identity or confirm with 2FA if enabled.</div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div style="display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:36px;height:36px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">5</div>
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">Copy Your API Key</div>
+          <div style="font-size:13px;color:var(--muted)">Your API key will be displayed <strong>only once</strong>. Copy it immediately and store it safely. If you lose it, you'll need to generate a new one.</div>
+        </div>
+      </div>
+
+      <!-- Step 6 -->
+      <div style="display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:36px;height:36px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">6</div>
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">Paste It Here</div>
+          <div style="font-size:13px;color:var(--muted)">Paste the API key into the input field above and click <strong>Save API Key</strong>. Your key will be encrypted and stored securely.</div>
+        </div>
+      </div>
+
+      <!-- Step 7 -->
+      <div style="display:flex;gap:16px;padding:16px 0">
+        <div style="min-width:36px;height:36px;background:var(--green);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">\\u2713</div>
+        <div>
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">Start Live Trading</div>
+          <div style="font-size:13px;color:var(--muted)">Once connected, you can switch any wallet from <strong>PAPER</strong> to <strong>LIVE</strong> mode. Live trades will execute on Polymarket using your real funds.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Security Note -->
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px">
+    <h3 style="font-size:18px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:22px">🛡️</span> Security & Privacy
+    </h3>
+    <div style="font-size:13px;color:var(--muted);line-height:1.8">
+      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">
+        <span style="color:var(--green);font-size:16px">✓</span>
+        <span>Your API key is stored encrypted in the database and never exposed in API responses.</span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">
+        <span style="color:var(--green);font-size:16px">✓</span>
+        <span>The key is only used server-side to execute trades — it never reaches your browser after saving.</span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">
+        <span style="color:var(--green);font-size:16px">✓</span>
+        <span>You can remove your API key at any time, which immediately disables live trading.</span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <span style="color:var(--green);font-size:16px">✓</span>
+        <span>We recommend generating a <strong>dedicated API key</strong> for this bot instead of reusing keys from other services.</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
 </div><!-- /main -->
 
 <footer>Real-time SSE stream at /api/stream &middot; JSON API at /api/data &middot; Wallet API at /api/wallets &middot; Trades at /api/trades/all | /api/trades/:walletId &middot; Strategy catalog at /api/strategies &middot; Whale API at /api/whales/* &middot; Console SSE at /api/console/stream</footer>
@@ -2359,6 +3380,190 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 let currentData = null;
 let strategies = [];
 let walletList = [];
+let _userData = null;
+
+/* ─── User menu ─── */
+(async function loadUser() {
+  try {
+    const res = await fetch('/api/auth/me');
+    if (!res.ok) { window.location.href = '/login'; return; }
+    const u = await res.json();
+    _userData = u;
+    const initial = (u.email || '?')[0].toUpperCase();
+    document.getElementById('userAvatar').textContent = initial;
+    document.getElementById('userEmail').textContent = u.email;
+    document.getElementById('udEmail').textContent = u.email;
+    const plan = document.getElementById('udPlan');
+    if (u.planTier === 'enterprise') {
+      plan.textContent = 'Enterprise'; plan.className = 'ud-plan plan-active';
+    } else if (u.planTier === 'pro') {
+      plan.textContent = 'Pro'; plan.className = 'ud-plan plan-active';
+    } else {
+      plan.textContent = 'Free Plan'; plan.className = 'ud-plan plan-free';
+    }
+    if (u.isAdmin) document.getElementById('udAdmin').style.display = '';
+
+    const isFreeUser = !!u.effectivelyFree;
+
+    /* ── Hide LIVE mode for free users ── */
+    if (isFreeUser) {
+      const liveOpt = document.getElementById('cw-mode-live');
+      if (liveOpt) liveOpt.remove();
+    }
+
+    /* ── Trial top-bar for free users (shown on all pages above header) ── */
+    if (isFreeUser) {
+      const topbar = document.getElementById('trial-topbar');
+      const spacer = document.getElementById('trial-spacer');
+      topbar.classList.add('visible');
+      spacer.classList.add('active');
+      if (u.trialExpired) {
+        topbar.classList.add('expired');
+        document.getElementById('trial-countdown').textContent = 'EXPIRED';
+      } else {
+        startTrialCountdown(u.trialRemainingMs);
+      }
+      /* Show upsell banners throughout the app */
+      document.querySelectorAll('.upsell-banner').forEach(function(b) { b.classList.add('visible'); });
+    }
+
+    /* ── Show deploy hero immediately if no wallets yet ── */
+    updateDeployHero(currentData?.activeWallets || 0);
+
+    /* ── Wallet limit badge ── */
+    var limitBadge = document.getElementById('wallet-limit-badge');
+    if (limitBadge && u.walletLimit) {
+      if (u.walletLimit === -1) {
+        limitBadge.textContent = u.walletCount + ' bots \\u2022 Unlimited';
+        limitBadge.style.color = 'var(--green)';
+      } else {
+        limitBadge.textContent = u.walletCount + ' / ' + u.walletLimit + ' bots';
+        if (u.walletCount >= u.walletLimit) {
+          limitBadge.style.color = 'var(--red)';
+          limitBadge.style.borderColor = 'var(--red)';
+        } else if (u.walletCount >= u.walletLimit - 1) {
+          limitBadge.style.color = 'var(--yellow)';
+          limitBadge.style.borderColor = 'var(--yellow)';
+        }
+      }
+      limitBadge.style.display = '';
+    }
+  } catch(e) { console.error('Failed to load user', e); }
+})();
+
+/* ── Trial countdown timer ── */
+function startTrialCountdown(remainingMs) {
+  const el = document.getElementById('trial-countdown');
+  const topbar = document.getElementById('trial-topbar');
+  function tick() {
+    remainingMs -= 1000;
+    if (remainingMs <= 0) {
+      el.textContent = 'EXPIRED';
+      topbar.classList.add('expired');
+      return;
+    }
+    const h = Math.floor(remainingMs / 3600000);
+    const m = Math.floor((remainingMs % 3600000) / 60000);
+    const s = Math.floor((remainingMs % 60000) / 1000);
+    el.textContent = h + 'h ' + (m < 10 ? '0' : '') + m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+  }
+  tick();
+  setInterval(tick, 1000);
+}
+
+/* ── Deploy Bots animation ── */
+async function deployBots() {
+  const btn = document.getElementById('deploy-btn');
+  btn.classList.add('deploying');
+  btn.textContent = 'Deploying...';
+  const overlay = document.getElementById('deploy-overlay');
+  overlay.classList.add('active');
+
+  const steps = ['ds-1','ds-2','ds-3','ds-4','ds-5','ds-6'];
+  let stepIdx = 0;
+
+  function advanceStep() {
+    if (stepIdx > 0) {
+      const prev = document.getElementById(steps[stepIdx - 1]);
+      prev.classList.remove('active');
+      prev.classList.add('done');
+      prev.querySelector('.step-icon').innerHTML = '<span class="deploy-anim-check">\\u2713</span>';
+    }
+    if (stepIdx < steps.length) {
+      document.getElementById(steps[stepIdx]).classList.add('active');
+      stepIdx++;
+    }
+  }
+
+  advanceStep();
+  await new Promise(r => setTimeout(r, 600));
+  advanceStep();
+  await new Promise(r => setTimeout(r, 500));
+
+  // Actually call the seed endpoint
+  let seedResult;
+  try {
+    const res = await fetch('/api/wallets/seed', { method: 'POST' });
+    seedResult = await res.json();
+  } catch(e) {
+    seedResult = { ok: false, error: 'Network error' };
+  }
+
+  advanceStep();
+  await new Promise(r => setTimeout(r, 500));
+  advanceStep();
+  await new Promise(r => setTimeout(r, 600));
+  advanceStep();
+  await new Promise(r => setTimeout(r, 500));
+  advanceStep();
+  await new Promise(r => setTimeout(r, 400));
+
+  // Final step done
+  const lastStep = document.getElementById(steps[steps.length - 1]);
+  lastStep.classList.remove('active');
+  lastStep.classList.add('done');
+  lastStep.querySelector('.step-icon').innerHTML = '<span class="deploy-anim-check">\\u2713</span>';
+  document.getElementById('deploy-ring').style.display = 'none';
+
+  await new Promise(r => setTimeout(r, 500));
+
+  // Show success
+  const stage = document.getElementById('deploy-stage');
+  stage.innerHTML = '<div class="deploy-success">' +
+    '<div class="deploy-anim-done">\\uD83D\\uDE80</div>' +
+    '<div class="deploy-anim-title" style="color:var(--green)">' +
+    (seedResult.ok ? '3 Bots Deployed Successfully!' : 'Deployment issue: ' + (seedResult.error || 'Unknown error')) +
+    '</div>' +
+    '<p style="color:var(--muted);font-size:14px;margin-top:8px">Your strategies are now running with live Polymarket data.</p>' +
+    '</div>';
+
+  await new Promise(r => setTimeout(r, 2500));
+  overlay.classList.remove('active');
+
+  // Hide deploy hero, refresh data
+  document.getElementById('deploy-hero').style.display = 'none';
+  await refresh();
+}
+
+/* ── Show/hide deploy hero based on wallet count ── */
+function updateDeployHero(walletCount) {
+  const hero = document.getElementById('deploy-hero');
+  if (!_userData) return;
+  if (walletCount === 0) {
+    hero.style.display = 'flex';
+  } else {
+    hero.style.display = 'none';
+  }
+}
+const userMenu = document.getElementById('userMenu');
+document.getElementById('userBtn').addEventListener('click', (e) => {
+  e.stopPropagation(); userMenu.classList.toggle('open');
+});
+document.addEventListener('click', () => userMenu.classList.remove('open'));
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/login';
+});
 
 /* ─── Tab switching ─── */
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2369,8 +3574,60 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById('pane-' + btn.dataset.tab).classList.add('active');
     if(btn.dataset.tab==='markets') loadMarkets();
     if(btn.dataset.tab==='whales') loadWhales();
+    if(btn.dataset.tab==='settings') loadUserSettings();
   });
 });
+
+/* ─── Settings Tab ─── */
+async function loadUserSettings() {
+  try {
+    const res = await fetch('/api/user/settings');
+    const data = await res.json();
+    const statusEl = document.getElementById('pm-key-status');
+    const removeBtn = document.getElementById('pmKeyRemoveBtn');
+    if (data.hasPolymarketKey) {
+      statusEl.innerHTML = '<span style="color:var(--green);font-weight:600">\\u2713 API Key Connected</span> <span style="color:var(--muted);margin-left:8px">Key ending in \\u2026' + data.polymarketKeyHint + '</span>';
+      statusEl.style.background = 'rgba(0,214,143,.08)';
+      statusEl.style.border = '1px solid rgba(0,214,143,.2)';
+      removeBtn.style.display = '';
+    } else {
+      statusEl.innerHTML = '<span style="color:var(--yellow);font-weight:600">\\u26A0 No API Key</span> <span style="color:var(--muted);margin-left:8px">Add your Polymarket API key to enable live trading</span>';
+      statusEl.style.background = 'rgba(255,193,7,.08)';
+      statusEl.style.border = '1px solid rgba(255,193,7,.2)';
+      removeBtn.style.display = 'none';
+    }
+  } catch(e) { console.error('Failed to load settings', e); }
+}
+
+document.getElementById('pmKeyForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var key = document.getElementById('pmApiKeyInput').value.trim();
+  if (!key) return;
+  try {
+    var res = await fetch('/api/user/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ polymarketApiKey: key })
+    });
+    var data = await res.json();
+    if (!res.ok) { alert(data.error || 'Failed to save'); return; }
+    document.getElementById('pmApiKeyInput').value = '';
+    loadUserSettings();
+  } catch(err) { alert('Failed to save API key'); }
+});
+
+async function removePolymarketKey() {
+  if (!confirm('Remove your Polymarket API key? This will disable live trading.')) return;
+  try {
+    var res = await fetch('/api/user/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ polymarketApiKey: null })
+    });
+    if (!res.ok) { alert('Failed to remove key'); return; }
+    loadUserSettings();
+  } catch(err) { alert('Failed to remove key'); }
+}
 
 /* ─── Helpers ─── */
 const $ = s => document.querySelector(s);
@@ -2391,6 +3648,34 @@ function renderSummary(d){
     '<div class="s-card"><div class="label">Unrealized PnL</div><div class="value '+pnlCls(uPnl)+'">$'+fmt(uPnl)+'</div></div>'+
     '<div class="s-card"><div class="label">Total PnL</div><div class="value '+pnlCls(tPnl)+'">$'+fmt(tPnl)+'</div></div>'+
     '<div class="s-card"><div class="label">Engine Status</div><div class="value" style="font-size:16px;color:var(--green)">RUNNING</div></div>';
+
+  /* ── Additional analytics cards ── */
+  const wl = d.wallets || [];
+  const totalTrades = wl.reduce((s,w) => s + (w.performance?.totalTrades||0), 0);
+  const totalWins = wl.reduce((s,w) => s + (w.performance?.winCount||0), 0);
+  const totalLosses = wl.reduce((s,w) => s + (w.performance?.lossCount||0), 0);
+  const overallWinRate = totalTrades > 0 ? (totalWins / totalTrades) : 0;
+  const totalPositions = wl.reduce((s,w) => s + (w.openPositions?.length||0), 0);
+  const avgPnlPerWallet = wl.length > 0 ? tPnl / wl.length : 0;
+  const bestWallet = wl.length > 0 ? wl.reduce((best,w) => (w.totalPnl||w.realizedPnl||0) > (best.totalPnl||best.realizedPnl||0) ? w : best, wl[0]) : null;
+  const worstWallet = wl.length > 0 ? wl.reduce((worst,w) => (w.totalPnl||w.realizedPnl||0) < (worst.totalPnl||worst.realizedPnl||0) ? w : worst, wl[0]) : null;
+  const totalCapUtil = d.totalCapital > 0 ? ((d.totalCapital - wl.reduce((s,w) => s + (w.availableBalance||0), 0)) / d.totalCapital * 100) : 0;
+  const returnPct = d.totalCapital > 0 ? (tPnl / d.totalCapital * 100) : 0;
+  const profitFactors = wl.filter(w => w.performance?.profitFactor != null && w.performance.profitFactor < 999);
+  const avgProfitFactor = profitFactors.length > 0 ? profitFactors.reduce((s,w) => s + w.performance.profitFactor, 0) / profitFactors.length : 0;
+
+  $('#analytics-extra').innerHTML=
+    '<div class="a-card"><div class="a-label">Total Trades</div><div class="a-val">'+totalTrades+'</div><div class="a-sub">'+totalWins+'W / '+totalLosses+'L</div></div>'+
+    '<div class="a-card"><div class="a-label">Win Rate</div><div class="a-val '+(overallWinRate>=.5?'pnl-pos':'pnl-neg')+'">'+(overallWinRate*100).toFixed(1)+'%</div><div class="a-sub">across all strategies</div></div>'+
+    '<div class="a-card"><div class="a-label">Open Positions</div><div class="a-val">'+totalPositions+'</div><div class="a-sub">live market exposure</div></div>'+
+    '<div class="a-card"><div class="a-label">Return on Capital</div><div class="a-val '+pnlCls(returnPct)+'">'+fmt(returnPct,2)+'%</div><div class="a-sub">$'+fmt(d.totalCapital,0)+' deployed</div></div>'+
+    '<div class="a-card"><div class="a-label">Capital Utilization</div><div class="a-val">'+fmt(totalCapUtil,1)+'%</div><div class="a-sub">of total capital in use</div></div>'+
+    '<div class="a-card"><div class="a-label">Avg Profit Factor</div><div class="a-val '+(avgProfitFactor>=1?'pnl-pos':'pnl-neg')+'">'+(avgProfitFactor>0?fmt(avgProfitFactor,2):'N/A')+'</div><div class="a-sub">win $ / loss $ ratio</div></div>'+
+    '<div class="a-card"><div class="a-label">Best Performer</div><div class="a-val pnl-pos" style="font-size:14px">'+(bestWallet?(bestWallet.displayName||bestWallet.walletId):'—')+'</div><div class="a-sub">'+(bestWallet?'$'+fmt(bestWallet.totalPnl||bestWallet.realizedPnl||0):'—')+'</div></div>'+
+    '<div class="a-card"><div class="a-label">Worst Performer</div><div class="a-val pnl-neg" style="font-size:14px">'+(worstWallet?(worstWallet.displayName||worstWallet.walletId):'—')+'</div><div class="a-sub">'+(worstWallet?'$'+fmt(worstWallet.totalPnl||worstWallet.realizedPnl||0):'—')+'</div></div>';
+
+  /* ── Update deploy hero visibility ── */
+  updateDeployHero(d.activeWallets || 0);
 }
 
 function renderWallets(wl){

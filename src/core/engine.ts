@@ -166,6 +166,13 @@ export class Engine {
       .map((r) => r.strategy);
   }
 
+  /** Get runners by strategy name with their walletIds (for per-user filtering). */
+  getRunnersByStrategyName(strategyName: string): Array<{ strategy: StrategyInterface; walletId: string }> {
+    return this.runners
+      .filter((r) => r.config === this.config.strategyConfig[strategyName] || r.strategy.name === strategyName)
+      .map((r) => ({ strategy: r.strategy, walletId: r.walletId }));
+  }
+
   /* ━━━━━━━━━━━━━━ Pause / Resume ━━━━━━━━━━━━━━ */
 
   /**

@@ -1,804 +1,352 @@
 <div align="center">
 
-# 🤖 Polymarket Trading Bot & Dashboard
+# Polymarket Trading Bot — SaaS Platform
 
-### The Most Advanced Open-Source Automated Trading Platform for Polymarket Prediction Markets
+### Multi-Strategy Automated Trading with Auth, Billing & Admin Dashboard
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-green?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/Tests-106%20Passing-brightgreen?logo=vitest&logoColor=white)](https://vitest.dev/)
-[![License](https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative&logoColor=white)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-green?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
-[![Lines of Code](https://img.shields.io/badge/Lines%20of%20Code-53%2C776-informational)](src/)
+[![Railway](https://img.shields.io/badge/Railway-Deployed-0B0D0E?logo=railway&logoColor=white)](https://railway.app/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-**7 trading strategies · 🐋 whale tracker & copy-trade simulator · 📊 real-time dashboard · 🔒 paper trading by default**
-
-> **🆕 First time?** Read the **[Step-by-Step Setup Guide](SETUP_GUIDE.md)** — no coding experience needed.
-
-[Features](#-features) · [Quick Start](#-quick-start) · [.env Setup](#-env-file-setup) · [Paper vs Live Trading](#-paper-vs-live-trading) · [Strategies](#-strategies) · [Whale Scanner](#-whale-tracking--scanner) · [Dashboard](#-real-time-dashboard) · [Configuration](#%EF%B8%8F-configuration) · [API Reference](#-api-endpoints) · [Custom Development](#-custom-bot-development)
-
-<br/>
-
-<img src="docs/screenshots/dashboard.png" alt="Polymarket Trading Bot Dashboard — Real-time P&L tracking, 10 wallets, 8 strategies, whale scanner" width="100%" />
-
-*Real-time dashboard showing 10 active wallets, $72,800 total capital, $39,240 total P&L, and 7 concurrent strategies running in paper trading mode.*
+**7 strategies · 3-tier plans · 3 payment providers · admin dashboard · one-click Railway deploy**
 
 </div>
 
 ---
 
-## 📖 Overview
+## Overview
 
-A production-grade, modular trading system for [Polymarket](https://polymarket.com) prediction markets. Run **7 concurrent strategies** — from cross-market arbitrage to AI-driven forecasting — each isolated in its own wallet with independent capital, risk limits, and execution modes (LIVE or PAPER).
+A production-ready SaaS platform built on top of a Polymarket prediction-market trading bot. Users sign up, choose a plan, and get isolated wallets that run automated strategies — all managed through a web dashboard.
 
-The platform includes an enterprise-level **whale tracking engine** that auto-discovers profitable traders, scores them with regime-adaptive algorithms, detects coordinated whale clusters, and lets you simulate copy-trading their moves — all from a beautiful real-time dashboard.
+### Key Capabilities
 
-### Why This Bot?
-
-| Problem | Solution |
-|---------|----------|
-| Manual trading is slow & emotional | 7 automated strategies scan 24/7, execute in milliseconds |
-| Can't find alpha in prediction markets | Whale scanner discovers profitable traders with proven track records |
-| Risk of ruin from a single bad trade | Per-wallet isolation, daily loss limits, global kill switch |
-| No visibility into what the bot is doing | Real-time SSE dashboard with live trades, P&L, positions |
-| Rate-limited by Polymarket APIs | Multi-API pool with rotation, 16x parallel scanning |
-| Fear of losing real money while testing | Paper trading mode by default — no real funds at risk |
+| Area | Details |
+|------|---------|
+| **Trading Strategies** | Cross-market arbitrage, mispricing arbitrage, AI forecast, market making, momentum, convergence, whale copy-trading |
+| **User Auth** | Email/password signup & login, JWT sessions, admin roles |
+| **Billing** | Stripe, Lemon Squeezy, and NOWPayments (crypto) — all optional |
+| **Plan Tiers** | Free (5 wallets), Pro (10 wallets, $99/mo), Enterprise (unlimited, $199/mo) |
+| **Admin Dashboard** | User management, billing config, environment settings, analytics |
+| **Deployment** | Docker multi-stage build, Railway with persistent volume |
 
 ---
 
-**VIEW MY PORTFOLIO OF BOTS I CAN DEVELOP:** https://github.com/dylanpersonguy/polymarket-trading-bot-developer
-
-
-## ✨ Features
-
-### 🧠 8 Built-In Trading Strategies
-
-| # | Strategy | Type | Description | Edge |
-|---|----------|------|-------------|------|
-| 1 | **Cross-Market Arbitrage** | Arbitrage | Exploits price differences between correlated Polymarket markets | 3%+ minimum edge |
-| 2 | **Mispricing Arbitrage** | Arbitrage | Detects when outcome probabilities don't sum to 100% | 2%+ dislocation |
-| 3 | **Filtered High-Prob Convergence** | Convergence | 7-filter pipeline targeting 65-96% probability outcomes | 200 bps take profit |
-| 4 | **Market Making (Spread)** | Market Making | Provides liquidity by quoting both sides of the book | 40 bps spread capture |
-| 5 | **Momentum** | Trend Following | Rides short-term price trends with 15-min lookback | Trend continuation |
-| 6 | **AI Forecast** | Research/AI | ML-driven predictions with web research pipeline | Data-driven alpha |
-| 7 | **Copy Trading** | Whale Mirroring | Mirrors whale trades in real-time with full risk management | Whale alpha extraction |
-| 8 | **User-Defined** | Custom | Your own strategy — extend the base class | Unlimited |
-
-### 🐋 Whale Tracking & Copy Trading
-
-- **Auto-Discovery Scanner** — Scans 50+ liquid markets per cycle to find profitable whales
-- **16x Parallel Scanning** — Semaphore-based concurrency with tunable batch sizes
-- **Multi-Dimensional Scoring** — Profitability (30%), timing skill (20%), low slippage (15%), consistency (15%), market selection (10%), recency (10%)
-- **Regime-Adaptive Scoring** — Automatically adjusts whale scores based on current market conditions
-- **Whale Cluster Detection** — Identifies when multiple whales converge on the same market
-- **Network Graph Analysis** — Visualizes relationships between whale wallets
-- **Copy-Trade Simulator** — Backtest copy-trading strategies with configurable slippage & delay
-- **Big Trade Alerts** — Real-time alerts for trades ≥ $3K
-- **Cross-Reference Engine** — Deep-scans top whales across all markets
-- **Historical Backfill** — 7-day lookback on first run for immediate insights
-- **On-Chain Balance Lookup** — USDC balance verification via Polygon RPC
-- **Multi-Exchange Ready** — Stubs for Kalshi and Manifold Markets
-
-### 📊 Real-Time Dashboard
-
-- **Server-Sent Events (SSE)** — Live updates, no polling
-- **Dark Theme UI** — Professional trading terminal aesthetic
-- **10 Wallet Cards** — Each showing strategy, P&L, open positions, trade history
-- **Strategy Library** — Browse all strategies, create wallets with one click
-- **Live Trade Feed** — Every BUY/SELL across all wallets in real-time
-- **Market Scanner View** — See which markets the bot is analyzing
-- **Console Logs** — Live log stream from the engine
-- **Whale Tracking Panel** with 6 sub-tabs:
-  - 🔍 Scanner — Live scan results with whale profiles
-  - 📊 Clusters — Coordinated whale activity detection
-  - 🕸️ Network — Wallet relationship graph
-  - 📈 Copy Sim — Copy-trade performance simulation
-  - 🌊 Regime — Market regime analysis & adaptive scoring
-  - 🔄 API Pool — Endpoint health & rate limit monitoring
-- **Performance Metrics** — Markets/sec, trades/sec, fetch latency, cache hit rate
-
-### 🔒 Risk Management
-
-- **Wallet Isolation** — Each strategy runs in its own wallet with separate capital
-- **Per-Wallet Limits** — Max position size, exposure per market, daily loss, max drawdown
-- **Global Kill Switch** — Emergency stop across all strategies
-- **Paper Trading Default** — LIVE mode requires explicit `ENABLE_LIVE_TRADING=true`
-- **Daily/Weekly Loss Halts** — Auto-pause at configurable thresholds (3% daily, 8% weekly)
-- **MLE Caps** — Maximum loss exposure capped at 5% per market, 15% total
-- **Order Rate Limiting** — Prevents runaway order submission
-- **No Secrets in Code** — All API keys via environment variables only
-
-### ⚡ Performance & Scalability
-
-- **50 TypeScript source files** — Clean, modular architecture
-- **106 unit tests** — Full coverage with Vitest
-- **16x parallel market scanning** — Configurable concurrency
-- **Smart caching** — 5-minute TTL market metadata cache
-- **API pool rotation** — Distribute requests across multiple endpoints
-- **Docker-ready** — Single `docker build` & `docker run`
-- **SQLite storage** — Zero-config whale database
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Node.js** 18+ ([download](https://nodejs.org/))
-- **npm** (comes with Node.js)
-- **Git** ([download](https://git-scm.com/))
-
-> **Need more help installing these?** See the [Setup Guide](SETUP_GUIDE.md#step-1-install-the-prerequisites) for detailed OS-specific instructions.
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/dylanpersonguy/Polymarket-Trading-Bot.git
-cd Polymarket-Trading-Bot
-
-# Install dependencies
-npm install
-
-# Build the project
-npm run build
-
-# Set up your environment file
-cp .env.example .env
-```
-
-> **Windows users:** Use `copy .env.example .env` instead of `cp`.
-
-### Launch (Paper Trading — Safe by Default)
-
-```bash
-# Start the bot with default config (all wallets in PAPER mode)
-npm start
-```
-
-No `.env` changes needed for paper trading — it works out of the box with fake money.
-
-The bot will start all 10 wallets (8 strategies), launch the whale scanner, and serve the dashboard at:
-
-> **🌐 Dashboard: [http://localhost:3000/dashboard](http://localhost:3000/dashboard)**
-
-### Verify It's Working
-
-```bash
-# Check the dashboard
-open http://localhost:3000/dashboard
-
-# View engine status via API
-curl http://localhost:3000/api/data | jq
-
-# List all wallets
-curl http://localhost:3000/api/wallets | jq
-
-# View live trades
-curl http://localhost:3000/api/trades/all | jq
-```
-
----
-
-## 🧠 Strategies
-
-### 1. Cross-Market Arbitrage
-
-Identifies price discrepancies between correlated Polymarket markets and captures the spread.
-
-```yaml
-strategy_config:
-  cross_market_arbitrage:
-    min_edge: 0.03  # Minimum 3% edge to trade
-```
-
-**Example:** Market A prices "Trump wins" at 52¢ while Market B prices "Trump nominee" at 48¢. If logically linked, the bot captures the 4% spread.
-
-### 2. Mispricing Arbitrage
-
-Detects when a market's outcome probabilities don't sum to 100% (minus the vig), indicating mispricing.
-
-```yaml
-strategy_config:
-  mispricing_arbitrage:
-    min_dislocation: 0.02  # 2% minimum dislocation
-```
-
-**Example:** A binary market shows YES at 55¢ and NO at 42¢ (total = 97¢). The bot buys the underpriced side.
-
-### 3. Filtered High-Probability Convergence
-
-The flagship strategy. A rule-based, no-AI approach that targets markets where the leading outcome has a 65-96% probability AND passes 7 strict filters:
-
-| Filter | What It Checks |
-|--------|---------------|
-| Liquidity | ≥ $10K market liquidity + depth within 1% of mid |
-| Probability Band | Leading outcome between 65% and 96% |
-| Spread | Bid-ask spread ≤ 200 bps |
-| Time-to-Resolution | Market resolves within 14 days |
-| Anti-Chasing | No recent 8%+ price spikes |
-| Flow/Pressure | Orderbook imbalance or net buy flow ≥ $500 |
-| Cluster Exposure | ≤ 25% capital in correlated markets |
-
-**Sizing:** `position = capital × 0.5% × setup_score` where setup_score is a composite of spread tightness (30%), depth (25%), order flow (25%), and time-to-resolution (20%).
-
-**Example:** Market "Will inflation drop below 3%?" — probability at 78%, spread at 120 bps, $50K liquidity, resolves in 9 days, strong buy flow. Setup score = 0.82. On $10K capital: position = $10,000 × 0.005 × 0.82 = **$41 entry**, targeting **200 bps ($0.82) profit**.
-
-### 4. Market Making (Spread Strategy)
-
-Quotes both sides of the orderbook, capturing the bid-ask spread. Works best in liquid, stable markets.
-
-```yaml
-strategy_config:
-  market_making:
-    spread_bps: 40  # 40 bps spread target
-```
-
-**Example:** Quoting 72¢ bid / 72.4¢ ask on a high-volume market, capturing 0.4¢ per round-trip.
-
-### 5. Momentum
-
-Rides short-term price trends using a 15-minute lookback window.
-
-```yaml
-strategy_config:
-  momentum:
-    lookback_minutes: 15
-```
-
-**Example:** Detects a market moving from 45¢ → 52¢ in 15 minutes with increasing volume. Enters a BUY, riding the momentum.
-
-### 6. AI Forecast
-
-ML-driven strategy that combines web research with quantitative analysis to forecast market outcomes.
-
-```yaml
-strategy_config:
-  ai_forecast:
-    refresh_minutes: 30  # Re-analyze every 30 minutes
-```
-
-### 7. Copy Trading
-
-Mirrors trades from configured whale addresses in near-real-time with comprehensive risk management. Supports multiple whales, three sizing modes, and automatic exit when the whale closes their position.
-
-**Key Features:**
-- **Multi-whale following** — Track any number of wallet addresses simultaneously
-- **Mirror / Inverse modes** — Copy whales directly or trade against them (contrarian)
-- **3 sizing modes** — Fixed size, proportional to whale's trade, or half-Kelly
-- **Full exit management** — Take profit, stop loss, trailing stop, time exit, whale-exit mirroring
-- **Per-whale performance tracking** — Win rate, P&L, and consecutive loss cooldowns
-- **Drawdown circuit breaker** — Auto-pauses copy trading when drawdown limit hit
-- **Daily volume caps** — Prevents over-exposure from high-frequency whales
-- **Market blacklist/whitelist** — Fine-grained control over which markets to copy
-
-```yaml
-strategy_config:
-  copy_trade:
-    whale_addresses:
-      - "0xYourWhaleAddressHere"
-    copy_mode: mirror              # mirror | inverse
-    size_mode: fixed               # fixed | proportional | kelly
-    fixed_size: 10
-    max_open_positions: 15
-    take_profit_bps: 150
-    stop_loss_bps: 100
-    trailing_stop_activate_bps: 80
-    exit_on_whale_exit: true
-    max_drawdown_pct: 0.15
-    max_daily_volume_usd: 5000
-```
-
-### 8. User-Defined Strategy
-
-A template for building your own custom strategy. Extend the `BaseStrategy` class:
-
-```typescript
-// src/strategies/custom/user_defined_strategy.ts
-export class UserDefinedStrategy extends BaseStrategy {
-  async evaluate(market: MarketData): Promise<Signal | null> {
-    // Your custom logic here
-  }
-}
-```
-
----
-
-## 🐋 Whale Tracking & Scanner
-
-The whale tracking engine is a self-contained system that discovers, scores, and monitors profitable Polymarket traders.
-
-### How It Works
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Market Scanner  │────▶│  Trade Analyzer   │────▶│  Whale Scorer   │
-│  50 markets/cycle│     │  Volume + Win Rate│     │  6-dimension    │
-│  16x parallel    │     │  ROI calculation  │     │  composite score│
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-         │                                                │
-         ▼                                                ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Fast Scan Mode  │     │  Cluster Detect   │     │  Copy Simulator │
-│  60s interval    │     │  2+ whales same   │     │  Backtest with  │
-│  Top 5 markets   │     │  market = cluster │     │  slippage model │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-```
-
-### Scanner Configuration
-
-```yaml
-whale_tracking:
-  scanner:
-    enabled: true
-    scanIntervalMs: 600000           # Scan every 10 minutes
-    marketsPerScan: 50               # Top 50 liquid markets
-    parallelFetchBatch: 16           # 16 concurrent fetches
-    minMarketVolume24hUsd: 10000     # Skip low-volume markets
-    autoPromoteEnabled: true         # Auto-track high-scoring whales
-    autoPromoteMinScore: 60          # Minimum score to auto-track
-    clusterDetectionEnabled: true    # Detect whale herds
-    networkGraphEnabled: true        # Map whale relationships
-    copySimEnabled: true             # Simulate copy trading
-    regimeAdaptiveEnabled: true      # Adjust scores by regime
-```
-
-### Scoring System
-
-Each whale is scored on 6 dimensions:
-
-| Dimension | Weight | Description |
-|-----------|--------|-------------|
-| Profitability | 30% | Historical P&L and ROI |
-| Timing Skill | 20% | Entry/exit timing relative to price moves |
-| Low Slippage | 15% | Execution quality and market impact |
-| Consistency | 15% | Win rate stability over time |
-| Market Selection | 10% | Quality of markets chosen |
-| Recency/Activeness | 10% | Recent trading activity |
-
-### API Pool (Rate Limit Bypass)
-
-Distribute API requests across multiple endpoints to multiply throughput:
-
-```yaml
-whale_tracking:
-  scanner:
-    apiPool:
-      enabled: true
-      selectionStrategy: least-loaded  # round-robin | least-loaded | weighted-random
-      endpoints:
-        - name: custom-proxy
-          url: https://your-proxy.example.com
-          type: data-api
-          maxRequestsPerMinute: 60
-```
-
----
-
-## 📊 Real-Time Dashboard
-
-The dashboard is served as a single-page app at `http://localhost:3000/dashboard` with **Server-Sent Events** for real-time updates (no WebSocket dependencies).
-
-### Dashboard Sections
-
-| Section | Description |
-|---------|-------------|
-| **📈 Overview** | Engine status, total P&L, active wallets, market count |
-| **💼 Wallets** | 10 wallet cards with strategy, capital, P&L, positions, trades |
-| **🧠 Strategy Library** | Browse all 8 strategies, view details, create wallets |
-| **📋 Trade Feed** | Live stream of all BUY/SELL signals across wallets |
-| **🔍 Market Scanner** | Currently analyzed markets with prices and volume |
-| **🐋 Whale Tracker** | Full whale tracking panel with 6 sub-tabs |
-| **📊 Performance** | Scanner speed metrics, cache hits, API health |
-| **🖥️ Console** | Live log stream from the engine |
-
-### Wallet Management (via Dashboard)
-
-- ✅ Create new wallets with any strategy
-- ✅ Pause/resume individual wallets
-- ✅ Delete wallets
-- ✅ View detailed P&L, positions, and trade history
-- ✅ Edit wallet settings (capital, risk limits)
-- ✅ Custom wallet display names
-
----
-
-## 🔌 API Endpoints
-
-The bot exposes a full REST API:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/dashboard` | GET | Full dashboard HTML |
-| `/api/data` | GET | Engine status + summary data |
-| `/api/wallets` | GET | List all wallets |
-| `/api/wallets` | POST | Create a new wallet |
-| `/api/wallets/:id` | DELETE | Remove a wallet |
-| `/api/wallets/:id/detail` | GET | Detailed wallet view |
-| `/api/wallets/:id/pause` | POST | Pause a wallet |
-| `/api/wallets/:id/resume` | POST | Resume a wallet |
-| `/api/wallets/display-names` | GET | Wallet display names |
-| `/api/strategies` | GET | List all strategies |
-| `/api/strategies/:id` | GET | Strategy details |
-| `/api/trades/all` | GET | All trades across wallets |
-| `/api/trades/:walletId` | GET | Trades for a specific wallet |
-| `/api/markets` | GET | Scanned markets data |
-| `/api/whales/*` | GET | Whale tracking endpoints |
-| `/api/console/stream` | GET | SSE live log stream |
-| `/api/console/logs` | GET | Historical log entries |
-
----
-
-## 🛠️ CLI Commands
-
-```bash
-# Start the trading engine
-bot start --config config.yaml
-
-# Check status
-bot status
-
-# Stop all strategies
-bot stop
-
-# Add a new wallet
-bot add-wallet --config config.yaml
-
-# Remove a wallet
-bot remove-wallet --id wallet_1 --config config.yaml
-
-# List available strategies
-bot list-strategies
-
-# View performance report
-bot performance
-
-# Paper trading report
-bot paper-report
-```
-
----
-
-## ⚙️ Configuration
-
-All configuration lives in `config.yaml`. Here's the structure:
-
-### Environment
-
-```yaml
-environment:
-  enable_live_trading: false  # PAPER mode by default — safety first
-```
-
-### Wallets
-
-```yaml
-wallets:
-  - id: paper_convergence
-    mode: PAPER                  # PAPER or LIVE
-    strategy: filtered_high_prob_convergence
-    capital: 10000               # $10,000 starting capital
-    risk_limits:
-      max_position_size: 500     # Max $500 per position
-      max_exposure_per_market: 1000
-      max_daily_loss: 500        # Stop at $500 daily loss
-      max_open_trades: 50
-      max_drawdown: 0.10         # 10% max drawdown
-```
-
----
-
-## 📁 .env File Setup
-
-The `.env` file stores your private settings (API keys, trading mode). It is **never uploaded to GitHub** — it's in `.gitignore`.
-
-### Create your .env file
-
-```bash
-cp .env.example .env       # Mac/Linux
-copy .env.example .env     # Windows
-```
-
-### What's inside
-
-| Variable | Required? | Default | Description |
-|----------|-----------|---------|-------------|
-| `ENABLE_LIVE_TRADING` | For live trading | `false` | Set to `true` to allow real trades |
-| `POLYMARKET_API_KEY` | For live trading | *(empty)* | Your Polymarket API key |
-| `DASHBOARD_PORT` | No | `3000` | Which port the dashboard runs on |
-| `LOG_LEVEL` | No | `info` | Logging detail: `debug`, `info`, `warn`, `error` |
-
-### Example .env for paper trading (no changes needed):
-
-```env
-ENABLE_LIVE_TRADING=false
-POLYMARKET_API_KEY=
-DASHBOARD_PORT=3000
-LOG_LEVEL=info
-```
-
-### Example .env for live trading:
-
-```env
-ENABLE_LIVE_TRADING=true
-POLYMARKET_API_KEY=your_api_key_from_polymarket
-DASHBOARD_PORT=3000
-LOG_LEVEL=info
-```
-
-> The `.env.example` file is included in the repo as a template. Copy it to `.env` and fill in your values.
-
----
-
-## 📊 Paper vs Live Trading
-
-### Paper Trading (Default — No Real Money)
-
-Paper trading simulates trades with fake money. **This is the default.** Just run:
-
-```bash
-npm start
-```
-
-All wallets start in PAPER mode. You can test every strategy safely.
-
-### Live Trading (Real Money)
-
-Live trading requires **two safety switches** to both be enabled — this prevents accidentally trading with real money:
-
-| Switch | Where | What to set |
-|--------|-------|-------------|
-| **Switch 1** | `.env` file | `ENABLE_LIVE_TRADING=true` |
-| **Switch 2** | `config.yaml` | `enable_live_trading: true` |
-
-**Both must be `true`** for live trading to work. If either is `false`, all wallets run in paper mode.
-
-### Step-by-step to go live:
-
-**1. Get your Polymarket API key:**
-- Log in to [polymarket.com](https://polymarket.com)
-- Go to Settings → API Keys
-- Create and copy your key
-
-**2. Edit your `.env` file:**
-```env
-ENABLE_LIVE_TRADING=true
-POLYMARKET_API_KEY=paste_your_key_here
-```
-
-**3. Edit `config.yaml`:**
-```yaml
-environment:
-  enable_live_trading: true
-
-wallets:
-  - id: my_live_wallet
-    mode: LIVE                    # ← Must be LIVE, not PAPER
-    strategy: filtered_high_prob_convergence
-    capital: 100                  # Start small!
-    risk_limits:
-      max_position_size: 20
-      max_exposure_per_market: 50
-      max_daily_loss: 25
-      max_open_trades: 5
-      max_drawdown: 0.15
-```
-
-**4. Start the bot:**
-```bash
-npm start
-```
-
-### Safety Features (Always Active)
-
-| Protection | Description |
-|-----------|-------------|
-| Two-factor enable | Both `.env` AND `config.yaml` must enable live trading |
-| API key check | LIVE orders are refused if `POLYMARKET_API_KEY` is missing |
-| Daily loss limit | Trading pauses when daily losses hit your `max_daily_loss` |
-| Max drawdown | Trading stops if total loss exceeds your `max_drawdown` |
-| Per-trade cap | No trade exceeds `max_position_size` |
-| Rate limiting | LIVE mode: 20 orders/min (Paper: 120/min) |
-| Kill switch | Emergency stop via dashboard |
-
-> ⚠️ **Start with paper trading for at least a few days** before going live. Start with small amounts ($50–$100) when you switch to live.
-
----
-
-### Enabling LIVE Trading
-
-See the [Paper vs Live Trading](#-paper-vs-live-trading) section above for full instructions.
-
-```bash
-# Quick version: set both .env and config.yaml, then run
-npm start
-```
-
-> ⚠️ **Warning:** LIVE mode executes real trades with real funds. Start with PAPER mode to validate your strategy first.
-
----
-
-## 🏗️ Architecture
+## Architecture
 
 ```
 src/
-├── core/                    # Engine, config loader, scheduler
-│   ├── engine.ts            # Main orchestrator
-│   ├── config_loader.ts     # YAML config parser
-│   └── scheduler.ts         # Strategy scheduling loop
-├── strategies/              # 8 pluggable strategies
-│   ├── strategy_interface.ts
-│   ├── registry.ts
-│   ├── arbitrage/           # Cross-market & mispricing
-│   ├── convergence/         # High-probability convergence
-│   ├── copy_trading/        # Whale copy trading
-│   ├── market_making/       # Spread capture
-│   ├── trend/               # Momentum following
-│   ├── research_ai/         # AI + web research
-│   └── custom/              # User-defined template
-├── execution/               # Order routing & position management
-├── risk/                    # Risk engine, exposure limits, kill switch
-├── wallets/                 # Wallet manager, paper & Polymarket wallets
-├── whales/                  # Whale scanner, scoring, clusters, network
-├── paper_trading/           # Fill simulator, P&L tracker, slippage model
-├── reporting/               # Dashboard server, logging, performance
-├── storage/                 # SQLite database & models
-└── data/                    # Market fetcher, orderbook, trade history
+├── auth/               # User auth, JWT, login/signup/admin pages
+│   ├── user_db.ts      # SQLite user database (better-sqlite3)
+│   ├── jwt.ts          # JWT token signing/verification
+│   ├── login_page.ts   # Login page (inline SPA)
+│   ├── landing_page.ts # Marketing landing page with pricing
+│   ├── checkout_page.ts# Checkout flow with plan selection
+│   └── admin_page.ts   # Admin dashboard (users, billing, settings)
+├── billing/            # Payment provider integrations
+│   ├── stripe_billing.ts
+│   ├── lemonsqueezy_billing.ts
+│   └── nowpayments_billing.ts
+├── strategies/         # Trading strategy implementations
+│   ├── arbitrage/      # Cross-market & mispricing arbitrage
+│   ├── convergence/    # High-probability convergence
+│   ├── market_making/  # Automated market making
+│   ├── trend/          # Momentum-based trading
+│   ├── research_ai/    # AI-powered forecasting
+│   ├── copy_trading/   # Whale copy-trade simulator
+│   └── registry.ts     # Strategy registry
+├── wallets/            # Per-user wallet management
+├── whales/             # Whale tracker & scanner
+├── reporting/
+│   ├── dashboard_server.ts  # Main HTTP server (all routes + inline SPA)
+│   └── console_log.ts       # Console reporting
+├── core/               # Trading engine, market data
+├── execution/          # Order execution pipeline
+├── data/               # Market data providers
+├── storage/            # Persistence layer
+├── cli.ts              # CLI entry point
+└── types.ts            # Shared type definitions
 ```
-
-**Key Design Decisions:**
-- **Wallet isolation** — Each strategy operates in a sandboxed wallet
-- **Event-driven** — SSE for dashboard, signal-based execution
-- **Pluggable strategies** — Extend `BaseStrategy` for custom logic
-- **Paper-first** — Everything defaults to simulation mode
-- **Zero external services** — SQLite, no Redis/Postgres/RabbitMQ required
 
 ---
 
-## 🧪 Testing
+## Quick Start
+
+### Prerequisites
+
+- **Node.js 20+** (22+ recommended)
+- **npm** (comes with Node.js)
+
+### 1. Clone & Install
 
 ```bash
-# Run all 106 tests
-npm test
-
-# Run with verbose output
-npx vitest run --reporter=verbose
-
-# Run specific test file
-npx vitest run tests/whale_scanner.test.ts
-
-# Type checking
-npm run typecheck
+git clone https://github.com/dylanpersonguy/polymarket-saas.git
+cd polymarket-saas
+npm ci
 ```
 
-**Test coverage includes:**
-- Wallet manager (creation, isolation, limits)
-- Order router (routing, execution, fills)
-- Risk engine (limits, kill switch, drawdown)
-- Whale scanner (discovery, scoring, clustering)
-- Whale DB (storage, queries, leaderboard)
-- Whale analytics (metrics, performance)
-- Convergence strategy (filters, sizing, signals)
-
----
-
-## 🐳 Docker
+### 2. Configure Environment
 
 ```bash
-# Build the image
-docker build -t polymarket-bot .
-
-# Run in paper trading mode
-docker run -p 3000:3000 polymarket-bot
-
-# Run with your .env file (recommended)
-docker run -p 3000:3000 --env-file .env polymarket-bot
-
-# Run with live trading enabled (inline env vars)
-docker run -p 3000:3000 \
-  -e ENABLE_LIVE_TRADING=true \
-  -e POLYMARKET_API_KEY=your_key_here \
-  polymarket-bot
-
-# Use a custom config file
-docker run -p 3000:3000 --env-file .env \
-  -v $(pwd)/config.yaml:/app/config.yaml \
-  polymarket-bot
-
-# Run in background (24/7)
-docker run -d -p 3000:3000 --name polymarket-bot --env-file .env polymarket-bot
+cp .env.example .env
 ```
 
-> See the [Setup Guide](SETUP_GUIDE.md#step-9-deploy-with-docker-optional) for more Docker details.
+Edit `.env` with your settings. See [Environment Variables](#environment-variables) below.
 
----
+### 3. Run in Development
 
-## 📈 Profitability & Examples
-
-### Strategy Performance Characteristics
-
-| Strategy | Target Return | Win Rate Target | Risk/Reward | Best Market Conditions |
-|----------|--------------|-----------------|-------------|----------------------|
-| Cross-Market Arb | 3-5% per trade | 70%+ | 2:1 | Correlated markets with price divergence |
-| Mispricing Arb | 2-4% per trade | 75%+ | 3:1 | Markets with probability sum ≠ 100% |
-| Convergence | 2% (200 bps) | 60-70% | 1.3:1 | High-prob markets near resolution |
-| Market Making | 0.4% per round-trip | 55%+ | 1:1 | Stable, liquid markets |
-| Momentum | 5-15% on trends | 45-55% | 2:1 | Trending markets with volume |
-| AI Forecast | Variable | Variable | Variable | Data-rich markets |
-| Whale Copy | Mirrors whale P&L | Whale-dependent | Whale-dependent | When top whales are active |
-
-### Example Trade Flow
-
-```
-[12:03:45] 🔍 Scanning 50 markets (16 parallel)...
-[12:03:47] ✅ Market "Will BTC hit $100K by Dec?" passed all 7 filters
-           Prob: 72% | Spread: 85 bps | Liquidity: $125K | Resolves: 8 days
-[12:03:47] 📊 Setup Score: 0.87 (spread=0.92, depth=0.85, flow=0.88, time=0.80)
-[12:03:47] 💰 Position: $10,000 × 0.5% × 0.87 = $43.50
-[12:03:47] 📝 BUY 60 shares @ $0.725 (limit, post-only)
-[12:03:48] ✅ FILLED: 60 shares @ $0.725 = $43.50
-[12:05:12] 📈 Price moved to $0.745 (+200 bps) → TAKE PROFIT triggered
-[12:05:12] 📝 SELL 60 shares @ $0.745
-[12:05:12] ✅ FILLED: Profit = $1.20 (+2.76% on position)
+```bash
+npm run dev
 ```
 
-### Risk Guardrails in Action
+### 4. Build & Run Production
 
+```bash
+npm run build
+npm start
 ```
-[14:22:01] ⚠️ Daily loss at 2.8% ($280) — approaching 3% limit
-[14:35:15] 🛑 Daily loss hit 3.0% — ALL strategies PAUSED for today
-[14:35:15] 📊 Weekly P&L: +$420 (+4.2%) — well within 8% drawdown limit
+
+The dashboard launches at `http://localhost:3000`.
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+
+### Core Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENABLE_LIVE_TRADING` | Enable real-money trading (requires API key) | `false` |
+| `POLYMARKET_API_KEY` | Your Polymarket API key for live orders | — |
+| `DASHBOARD_PORT` | HTTP server port | `3000` |
+| `JWT_SECRET` | Secret for signing auth tokens (**change in production**) | `change-me-in-production` |
+| `ADMIN_EMAIL` | Auto-promote this email to admin on signup | — |
+| `DATA_DIR` | Directory for SQLite databases | `./data` |
+
+### Stripe Billing
+
+| Variable | Description |
+|----------|-------------|
+| `STRIPE_SECRET_KEY` | Stripe secret key (`sk_test_` or `sk_live_`) |
+| `STRIPE_WEBHOOK_SECRET` | Webhook signing secret (`whsec_`) |
+| `STRIPE_PRICE_ID` | Recurring price ID for the subscription (`price_`) |
+| `SIGNUP_FEE_CENTS` | One-time signup fee in cents (default: `4999`) |
+
+### Lemon Squeezy Billing
+
+| Variable | Description |
+|----------|-------------|
+| `LEMONSQUEEZY_API_KEY` | Lemon Squeezy API key |
+| `LEMONSQUEEZY_STORE_ID` | Your store ID |
+| `LEMONSQUEEZY_VARIANT_ID` | Subscription variant ID |
+| `LEMONSQUEEZY_WEBHOOK_SECRET` | Webhook signing secret |
+
+### NOWPayments (Crypto)
+
+| Variable | Description |
+|----------|-------------|
+| `NOWPAYMENTS_API_KEY` | NOWPayments API key |
+| `NOWPAYMENTS_IPN_SECRET` | IPN secret for webhook verification |
+| `NOWPAYMENTS_PRICE_USD` | Monthly price in USD (default: `29.99`) |
+
+> **Note:** If no billing provider is configured, all signups get free access automatically.
+
+---
+
+## Plan Tiers
+
+| Plan | Price | Wallets | Target |
+|------|-------|---------|--------|
+| **Free** | $0/mo | 5 | Try it out with paper trading |
+| **Pro** | $99/mo | 10 | Active traders |
+| **Enterprise** | $199/mo | Unlimited | Power users & teams |
+
+Wallet limits are enforced server-side. Admin users always get Enterprise-tier access.
+
+---
+
+## Trading Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| **Cross-Market Arbitrage** | Exploits price differences across correlated markets |
+| **Mispricing Arbitrage** | Detects when YES + NO probabilities don't sum to 100% |
+| **AI Forecast** | ML-powered probability predictions against market prices |
+| **Market Making** | Provides liquidity with orders on both sides of the book |
+| **Momentum** | Follows short-term price trends with configurable lookback |
+| **Convergence** | Trades high-probability markets approaching resolution |
+| **Whale Copy-Trading** | Mirrors trading activity from large wallets |
+
+Strategies are configured in `config.yaml`. Each wallet can run multiple strategies simultaneously.
+
+---
+
+## Admin Dashboard
+
+Navigate to `/admin` after logging in as an admin user.
+
+### Tabs
+
+- **Overview** — User count, active subscriptions, revenue estimate, system health
+- **Billing** — Configure Stripe, Lemon Squeezy, and NOWPayments directly from the UI
+- **Users** — Search users, promote/demote admins, activate/deactivate subscriptions, view wallet counts
+- **Settings** — Edit all environment variables live with inline inputs; saves to `.env` and updates the running process
+
+### First Admin Setup
+
+Set `ADMIN_EMAIL` in your `.env` to your email address. When you sign up with that email, you're automatically promoted to admin.
+
+---
+
+## Deployment
+
+### Railway (Recommended)
+
+The project includes a multi-stage `Dockerfile` optimized for Railway.
+
+1. **Install Railway CLI:** `brew install railway` (or [other methods](https://docs.railway.app/develop/cli))
+2. **Login:** `railway login`
+3. **Create project:** `railway init`
+4. **Add persistent volume:** Mount at `/data` for SQLite databases
+5. **Set environment variables** in Railway dashboard:
+   - `NODE_OPTIONS=--max-old-space-size=4096`
+   - `DATA_DIR=/data`
+   - `PORT=3000`
+   - `ADMIN_EMAIL=your@email.com`
+   - `JWT_SECRET=<generate-a-random-string>`
+6. **Deploy:** `railway up`
+
+#### Auto-Deploy from GitHub
+
+In Railway dashboard → Service → Settings → **Connect Repo** → select this repo and branch. Every push to `main` triggers a deploy automatically.
+
+### Docker (Self-hosted)
+
+```bash
+docker build -t polymarket-saas .
+docker run -d \
+  -p 3000:3000 \
+  -v polymarket-data:/data \
+  -e DATA_DIR=/data \
+  -e JWT_SECRET=$(openssl rand -hex 32) \
+  -e ADMIN_EMAIL=your@email.com \
+  polymarket-saas
 ```
 
 ---
 
-## 🔐 Security
+## API Endpoints
 
-- ✅ No API keys or secrets in the codebase
-- ✅ All credentials via environment variables
-- ✅ Private keys are never logged
-- ✅ PAPER mode by default
-- ✅ LIVE trading requires explicit opt-in
-- ✅ Audited for secret exposure before publication
+### Auth
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/auth/signup` | Register new user |
+| `POST` | `/api/auth/login` | Login, returns JWT cookie |
+| `POST` | `/api/auth/logout` | Clear session |
+| `GET` | `/api/auth/me` | Current user info, plan tier, wallet count |
+
+### Wallets
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/wallets` | List user's wallets |
+| `POST` | `/api/wallets` | Create wallet (enforces plan limits) |
+| `DELETE` | `/api/wallets/:id` | Remove wallet |
+
+### Admin (requires admin role)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/admin/data` | Full admin dashboard data |
+| `POST` | `/api/admin/settings` | Save environment variables to `.env` |
+| `POST` | `/api/admin/set-admin` | Toggle admin role for a user |
+| `POST` | `/api/admin/set-subscription` | Change user subscription status |
+| `POST` | `/api/admin/promote` | Promote user to admin by email |
+| `POST` | `/api/admin/stripe-config` | Save Stripe configuration |
+| `POST` | `/api/admin/lemonsqueezy-config` | Save Lemon Squeezy configuration |
+| `POST` | `/api/admin/nowpayments-config` | Save NOWPayments configuration |
+
+### Billing Webhooks
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/billing/webhook` | Stripe webhook |
+| `POST` | `/api/billing/lemonsqueezy/webhook` | Lemon Squeezy webhook |
+| `POST` | `/api/billing/nowpayments/webhook` | NOWPayments IPN webhook |
 
 ---
 
-## 📬 Custom Bot Development
+## Configuration
 
-**Want a custom trading bot tailored to your strategy?**
+### config.yaml
 
-I build custom automated trading bots for prediction markets, crypto, and forex. Whether you need modifications to this platform or an entirely new system, I can help.
+Controls trading behavior:
 
+```yaml
+environment:
+  enable_live_trading: false    # Must also set ENABLE_LIVE_TRADING=true in .env
 
-**VIEW MY PORTFOLIO OF BOTS I CAN DEVELOP:** https://github.com/dylanpersonguy/polymarket-trading-bot-developer
+strategy_config:
+  cross_market_arbitrage:
+    min_edge: 0.03
+  mispricing_arbitrage:
+    min_dislocation: 0.02
+  ai_forecast:
+    refresh_minutes: 30
+  market_making:
+    spread_bps: 40
+  momentum:
+    lookback_minutes: 15
+  filtered_high_prob_convergence:
+    enabled: true
+    min_liquidity_usd: 10000
+    min_prob: 0.65
+    max_prob: 0.96
+```
 
-📱 **Contact: [@DylanForexia on Telegram](https://t.me/DylanForexia)**
-
-Services include:
-- Custom strategy development & backtesting
-- Live trading integration with exchange APIs
-- Risk management system design
-- Dashboard & monitoring tools
-- Performance optimization & scaling
+See `config.yaml` for all available options with inline comments.
 
 ---
 
-## 📄 License
+## Development
 
-This project is open-source under the [MIT License](LICENSE).
+```bash
+npm run typecheck    # Type-check with tsc
+npm test             # Run tests (vitest)
+npm run build        # Compile to dist/
+npm run dev          # Dev mode with hot reload (tsx)
+```
+
+### Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| **Runtime** | Node.js 20+ with TypeScript 5.6 (CommonJS) |
+| **Database** | SQLite via better-sqlite3 |
+| **Auth** | bcryptjs + JWT (httpOnly cookies) |
+| **Frontend** | Inline SPA — served from TypeScript template literals, no build step |
+| **Billing** | Stripe SDK v22, Lemon Squeezy API, NOWPayments API |
+| **Deploy** | Docker multi-stage build (bookworm-slim), Railway |
 
 ---
 
-## 🌟 Star This Repo
+## Security
 
-If you find this project useful, please ⭐ star the repo — it helps others discover it!
+- JWT tokens stored as httpOnly cookies (not localStorage)
+- Passwords hashed with bcrypt (cost factor 12)
+- Admin endpoints require `isAdmin` flag checked server-side
+- Secrets masked in admin dashboard (shows only last 4 characters)
+- Environment variables saved to `.env` on disk, never exposed to clients
+- Wallet operations scoped to authenticated user — no cross-user access
+- Billing webhooks verify provider signatures before processing
+- Allowlisted environment variables — only known keys can be set via admin UI
 
 ---
 
-<div align="center">
+## License
 
-**Built with ❤️ for the Polymarket community**
-
-*51 source files · 21,000+ lines of code · 144 tests · 8 strategies · 1 mission: automate alpha*
-
-</div>
+MIT
