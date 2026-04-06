@@ -772,6 +772,12 @@ export class DashboardServer {
     if (restored > 0) {
       console.log(`[DashboardServer] Restored ${restored} wallet(s) from database`);
     }
+
+    // Clean up orphaned user_wallets entries that have no wallet_configs
+    const cleaned = this.userDb.cleanupOrphanedWallets();
+    if (cleaned > 0) {
+      console.log(`[DashboardServer] Cleaned up ${cleaned} orphaned wallet assignment(s)`);
+    }
   }
 
   /** Build a live price map from the orderbook stream cache */

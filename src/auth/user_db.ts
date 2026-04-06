@@ -230,6 +230,14 @@ export class UserDB {
     }));
   }
 
+  /** Remove user_wallets entries that have no corresponding wallet_configs entry */
+  cleanupOrphanedWallets(): number {
+    const result = this.db.prepare(
+      'DELETE FROM user_wallets WHERE wallet_id NOT IN (SELECT wallet_id FROM wallet_configs)'
+    ).run();
+    return result.changes;
+  }
+
   private rowToUser(row: any): User {
     return {
       id: row.id,
