@@ -511,8 +511,8 @@ tr:hover td{background:var(--surface2)}
             <tr>
               <th>Email</th>
               <th>Role</th>
+              <th>Plan</th>
               <th>Subscription</th>
-              <th>Stripe Customer</th>
               <th>Wallets</th>
               <th>Signed Up</th>
               <th>Actions</th>
@@ -701,14 +701,26 @@ async function loadAdminData() {
 }
 
 /* ───── Users table ───── */
+function planBadge(plan) {
+  if (plan === 'enterprise') return '<span class="badge-sm badge-admin">Enterprise</span>';
+  if (plan === 'pro') return '<span class="badge-sm badge-active">Pro</span>';
+  return '<span class="badge-sm badge-none">Free</span>';
+}
+
 function renderUsersTable(users) {
   const body = document.getElementById('usersTableBody');
   body.innerHTML = users.map(u =>
     '<tr>' +
     '<td class="user-email">' + u.email + '</td>' +
     '<td>' + (u.isAdmin ? '<span class="badge-sm badge-admin">Admin</span>' : '<span class="badge-sm badge-none">User</span>') + '</td>' +
+    '<td>' +
+      '<select onchange="setPlan(\\'' + u.id + '\\', this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">' +
+        '<option value="free"' + (u.planTier === 'free' ? ' selected' : '') + '>Free</option>' +
+        '<option value="pro"' + (u.planTier === 'pro' ? ' selected' : '') + '>Pro</option>' +
+        '<option value="enterprise"' + (u.planTier === 'enterprise' ? ' selected' : '') + '>Enterprise</option>' +
+      '</select>' +
+    '</td>' +
     '<td>' + statusBadge(u.subscriptionStatus) + '</td>' +
-    '<td style="font-family:monospace;font-size:11px;color:var(--muted)">' + (u.stripeCustomerId || '—') + '</td>' +
     '<td>' + u.walletCount + '</td>' +
     '<td style="font-size:12px;color:var(--muted)">' + formatDate(u.createdAt) + '</td>' +
     '<td>' +
@@ -734,6 +746,14 @@ async function toggleAdmin(userId, isAdmin) {
   try {
     await api('/api/admin/set-admin', { method: 'POST', body: JSON.stringify({ userId, isAdmin }) });
     toast(isAdmin ? 'User promoted to admin' : 'Admin role removed');
+    loadAdminData();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function setPlan(userId, plan) {
+  try {
+    await api('/api/admin/set-plan', { method: 'POST', body: JSON.stringify({ userId, plan }) });
+    toast('Plan updated to ' + plan.charAt(0).toUpperCase() + plan.slice(1));
     loadAdminData();
   } catch (err) { toast(err.message, 'error'); }
 }

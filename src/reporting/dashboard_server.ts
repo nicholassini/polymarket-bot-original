@@ -1190,6 +1190,7 @@ export class DashboardServer {
             isAdmin: u.isAdmin,
             subscriptionStatus: u.subscriptionStatus,
             stripeCustomerId: u.stripeCustomerId,
+            planTier: u.planTier || 'free',
             walletCount: this.userDb.getWalletIds(u.id).length,
             createdAt: u.createdAt,
           })),
@@ -1210,6 +1211,21 @@ export class DashboardServer {
         const isAdmin = Boolean(body.isAdmin);
         if (!targetId) { json(res, 400, { error: 'userId required' }); return; }
         this.userDb.setAdmin(targetId, isAdmin);
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      if (path === '/api/admin/set-plan' && method === 'POST') {
+        const body = await readBody(req);
+        const targetId = String(body.userId ?? '');
+        const tier = String(body.plan ?? 'free');
+        if (!targetId) { json(res, 400, { error: 'userId required' }); return; }
+        if (!['free', 'pro', 'enterprise'].includes(tier)) { json(res, 400, { error: 'Invalid plan. Use free, pro, or enterprise.' }); return; }
+        this.userDb.updatePlanTier(targetId, tier);
+        // If upgrading to a paid plan, also activate their subscription
+        if (tier === 'pro' || tier === 'enterprise') {
+          this.userDb.updateSubscription(targetId, '', 'active');
+        }
         json(res, 200, { ok: true });
         return;
       }
