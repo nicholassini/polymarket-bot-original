@@ -62,6 +62,11 @@ export class Engine {
       });
     }
 
+    // Remove any previously registered handler to prevent listener stacking
+    // if initialize() is called more than once (e.g. during restarts).
+    if (this.marketUpdateHandler) {
+      this.stream.removeListener('update', this.marketUpdateHandler);
+    }
     this.marketUpdateHandler = (data) => this.handleMarketUpdate(data);
     this.stream.on('update', this.marketUpdateHandler);
   }
@@ -78,10 +83,9 @@ export class Engine {
 
   stop(): void {
     this.scheduler.stop();
-    if (this.marketUpdateHandler) {
-      this.stream.removeListener('update', this.marketUpdateHandler);
-      this.marketUpdateHandler = undefined;
-    }
+    // Remove all 'update' listeners to guarantee no leaked handlers
+    this.stream.removeAllListeners('update');
+    this.marketUpdateHandler = undefined;
     this.stream.stop();
     for (const runner of this.runners) {
       runner.strategy.shutdown();

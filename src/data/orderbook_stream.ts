@@ -12,8 +12,8 @@ import { consoleLog } from '../reporting/console_log';
  * real MarketData updates for every tracked market.
  */
 export class OrderbookStream extends EventEmitter {
-  private static readonly MAX_CACHE_SIZE = 5_000;
-  private static readonly MAX_SEEN_MARKETS = 10_000;
+  private static readonly MAX_CACHE_SIZE = 2_000;
+  private static readonly MAX_SEEN_MARKETS = 2_000;
   private timer?: NodeJS.Timeout;
   private readonly fetcher: MarketFetcher;
   private readonly pollMs: number;
@@ -55,6 +55,8 @@ export class OrderbookStream extends EventEmitter {
       logger.info('OrderbookStream stopped');
       consoleLog.warn('SCAN', 'OrderbookStream stopped');
     }
+    this.cache.clear();
+    this.removeAllListeners();
   }
 
   getMarket(marketId: string): MarketData | undefined {
