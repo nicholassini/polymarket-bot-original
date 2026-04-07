@@ -36,22 +36,30 @@ export async function createNPInvoice(
     throw new Error('NOWPayments is not configured');
   }
 
-  const response = await fetch(`${NP_API_BASE}/invoice`, {
-    method: 'POST',
-    headers: {
-      'x-api-key': process.env.NOWPAYMENTS_API_KEY || '',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      price_amount: Number(process.env.NOWPAYMENTS_PRICE_USD || '99'),
-      price_currency: 'usd',
-      order_id: userId,
-      order_description: 'Polymarket Bot Pro — 1 Month',
-      ipn_callback_url: `${successUrl.split('/dashboard')[0]}/api/billing/nowpayments/webhook`,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-    }),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  let response: Response;
+  try {
+    response = await fetch(`${NP_API_BASE}/invoice`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': process.env.NOWPAYMENTS_API_KEY || '',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        price_amount: Number(process.env.NOWPAYMENTS_PRICE_USD || '99'),
+        price_currency: 'usd',
+        order_id: userId,
+        order_description: 'Polymarket Bot Pro \u2014 1 Month',
+        ipn_callback_url: `${successUrl.split('/dashboard')[0]}/api/billing/nowpayments/webhook`,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

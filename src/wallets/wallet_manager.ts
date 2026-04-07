@@ -5,7 +5,7 @@ import { logger } from '../reporting/logs';
 
 export interface ExecutionWallet {
   getState(): WalletState;
-  getTradeHistory(): TradeRecord[];
+  getTradeHistory(): readonly TradeRecord[];
   placeOrder(request: {
     marketId: string;
     outcome: 'YES' | 'NO';
@@ -58,14 +58,14 @@ export class WalletManager {
     return Array.from(this.wallets.values()).map((wallet) => wallet.getState());
   }
 
-  getTradeHistory(walletId: string): TradeRecord[] {
+  getTradeHistory(walletId: string): readonly TradeRecord[] {
     const wallet = this.wallets.get(walletId);
     if (!wallet) return [];
     return wallet.getTradeHistory();
   }
 
-  getAllTradeHistories(): Map<string, TradeRecord[]> {
-    const map = new Map<string, TradeRecord[]>();
+  getAllTradeHistories(): Map<string, readonly TradeRecord[]> {
+    const map = new Map<string, readonly TradeRecord[]>();
     for (const [id, wallet] of this.wallets) {
       map.set(id, wallet.getTradeHistory());
     }

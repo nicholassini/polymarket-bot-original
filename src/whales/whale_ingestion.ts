@@ -354,7 +354,14 @@ export class WhaleIngestion {
   private async fetchWithRetry(url: string, maxRetries = 3): Promise<Response | null> {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const res = await fetch(url);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10_000);
+        let res: Response;
+        try {
+          res = await fetch(url, { signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
         if (res.ok) return res;
         if (res.status === 429) {
           const retryAfter = parseInt(res.headers.get('retry-after') || '5', 10);

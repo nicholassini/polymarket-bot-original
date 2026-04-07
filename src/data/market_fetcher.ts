@@ -68,7 +68,14 @@ export class MarketFetcher {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const url = `${this.gammaApi}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}&order=volume24hr&ascending=false`;
-      const response = await fetch(url);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      let response: Response;
+      try {
+        response = await fetch(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
 
       if (!response.ok) {
         logger.error({ status: response.status, offset }, 'Gamma API page request failed');

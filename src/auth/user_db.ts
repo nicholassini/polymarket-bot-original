@@ -21,6 +21,9 @@ const SALT_ROUNDS = 12;
 
 export class UserDB {
   private db: Database.Database;
+  /** In-memory cache: userId → walletIds (30s TTL, invalidated on assign/unassign) */
+  private walletIdCache = new Map<string, { ids: string[]; ts: number }>();
+  private static readonly WALLET_CACHE_TTL = 30_000;
 
   constructor(dbPath?: string) {
     const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -178,17 +181,23 @@ export class UserDB {
     this.db.prepare(
       'INSERT OR REPLACE INTO user_wallets (wallet_id, user_id) VALUES (?, ?)'
     ).run(walletId, userId);
+    this.walletIdCache.delete(userId);
   }
 
   /** Remove wallet-user association */
   unassignWallet(walletId: string): void {
     this.db.prepare('DELETE FROM user_wallets WHERE wallet_id = ?').run(walletId);
+    this.walletIdCache.clear(); // walletId→userId not tracked, clear all
   }
 
-  /** Get all wallet IDs belonging to a user */
+  /** Get all wallet IDs belonging to a user (cached 30s) */
   getWalletIds(userId: string): string[] {
+    const cached = this.walletIdCache.get(userId);
+    if (cached && Date.now() - cached.ts < UserDB.WALLET_CACHE_TTL) return cached.ids;
     const rows = this.db.prepare('SELECT wallet_id FROM user_wallets WHERE user_id = ?').all(userId) as any[];
-    return rows.map(r => r.wallet_id);
+    const ids = rows.map(r => r.wallet_id);
+    this.walletIdCache.set(userId, { ids, ts: Date.now() });
+    return ids;
   }
 
   /** Promote / demote a user to admin */

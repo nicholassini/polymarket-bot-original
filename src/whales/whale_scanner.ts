@@ -403,6 +403,7 @@ export class WhaleScanner {
   private static readonly MAX_CLUSTER_SIGNALS = 500;
   private static readonly MAX_BIG_TRADE_ADDRESSES = 5_000;
   private static readonly MAX_COPY_SIM_RESULTS = 2_000;
+  private static readonly MAX_TRADES_PER_MARKET = 100;
 
   private db: WhaleDB;
   private config: WhaleTrackingConfig;
@@ -1242,8 +1243,13 @@ export class WhaleScanner {
         if (t.match_time > mAgg.lastTradeTs) mAgg.lastTradeTs = t.match_time;
 
         const entry: TradeEntry = { price, size, notional, ts: t.match_time, assetId: t.asset_id };
-        if (t.side === 'BUY') mAgg.buys.push(entry);
-        else mAgg.sells.push(entry);
+        if (t.side === 'BUY') {
+          mAgg.buys.push(entry);
+          if (mAgg.buys.length > WhaleScanner.MAX_TRADES_PER_MARKET) mAgg.buys.shift();
+        } else {
+          mAgg.sells.push(entry);
+          if (mAgg.sells.length > WhaleScanner.MAX_TRADES_PER_MARKET) mAgg.sells.shift();
+        }
       }
     }
   }

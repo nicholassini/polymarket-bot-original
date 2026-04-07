@@ -30,7 +30,14 @@ export class TradeHistory {
     const url = `${this.clobApi}/prices-history?market=${clobTokenId}&interval=${interval}&fidelity=${fidelity}`;
 
     try {
-      const response = await fetch(url);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      let response: Response;
+      try {
+        response = await fetch(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       if (!response.ok) {
         logger.warn({ status: response.status, clobTokenId }, 'CLOB prices-history request failed');
         return [];

@@ -93,7 +93,7 @@ interface StrategyCatalogEntry {
    ────────────────────────────────────────────────────────────── */
 import type { WalletState, TradeRecord, Position } from '../types';
 
-function buildWalletDetail(wallet: WalletState, trades: TradeRecord[], marketPrices?: Map<string, number>) {
+function buildWalletDetail(wallet: WalletState, trades: readonly TradeRecord[], marketPrices?: Map<string, number>) {
   const sorted = [...trades].sort((a, b) => a.timestamp - b.timestamp);
 
   /* ── Basic stats ── */
@@ -901,7 +901,7 @@ export class DashboardServer {
           if (!jsonStr) {
             const userWalletIds = new Set(this.userDb.getWalletIds(userId));
             const userWallets = allWallets.filter(w => userWalletIds.has(w.walletId));
-            const userTrades = new Map<string, import('../types').TradeRecord[]>();
+            const userTrades = new Map<string, readonly import('../types').TradeRecord[]>();
             for (const [wid, trades] of allTrades) {
               if (userWalletIds.has(wid)) {
                 // Cap trade history to last 500 to avoid massive payloads
@@ -1068,7 +1068,7 @@ export class DashboardServer {
     const getUserWallets = () => this.walletManager.listWallets().filter(w => userWalletIds.has(w.walletId));
     const getUserTradeHistories = () => {
       const all = this.walletManager.getAllTradeHistories();
-      const filtered = new Map<string, import('../types').TradeRecord[]>();
+      const filtered = new Map<string, readonly import('../types').TradeRecord[]>();
       for (const [wid, trades] of all) {
         if (userWalletIds.has(wid)) filtered.set(wid, trades);
       }
@@ -1998,15 +1998,12 @@ export class DashboardServer {
       return;
     }
 
-    /* ─── JSON: live markets from Polymarket Gamma API ─── */
+    /* ─── JSON: live markets from cached orderbook stream ─── */
     if (path === '/api/markets' && method === 'GET') {
-      try {
-        const fetcher = new MarketFetcher();
-        const markets = await fetcher.fetchSnapshot();
-        json(res, 200, markets);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        json(res, 500, { ok: false, error: msg });
+      if (!this.engine) {
+        json(res, 503, { ok: false, error: 'Engine not available' });
+      } else {
+        json(res, 200, this.engine.getStream().getAllMarkets());
       }
       return;
     }

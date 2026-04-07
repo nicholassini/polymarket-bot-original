@@ -34,8 +34,8 @@ export class PolymarketWallet {
     return { ...this.state, openPositions: [...this.state.openPositions] };
   }
 
-  getTradeHistory(): TradeRecord[] {
-    return [...this.trades];
+  getTradeHistory(): readonly TradeRecord[] {
+    return this.trades;
   }
 
   updateBalance(delta: number): void {
@@ -103,14 +103,21 @@ export class PolymarketWallet {
 
     let apiResponse: Response;
     try {
-      apiResponse = await fetch(`${this.clobApi}/order`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(orderPayload),
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
+        apiResponse = await fetch(`${this.clobApi}/order`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(orderPayload),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ walletId: this.state.walletId, orderId, error: msg }, 'LIVE order network error');

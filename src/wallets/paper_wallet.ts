@@ -36,8 +36,8 @@ export class PaperWallet {
     return { ...this.state, openPositions: [...this.state.openPositions] };
   }
 
-  getTradeHistory(): TradeRecord[] {
-    return [...this.trades];
+  getTradeHistory(): readonly TradeRecord[] {
+    return this.trades;
   }
 
   updateBalance(delta: number): void {

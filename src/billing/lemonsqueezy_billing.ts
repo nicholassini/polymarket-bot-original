@@ -26,32 +26,40 @@ export async function createLSCheckoutSession(
     throw new Error('Lemon Squeezy is not configured');
   }
 
-  const response = await fetch(`${LS_API_BASE}/checkouts`, {
-    method: 'POST',
-    headers: {
-      'Accept': 'application/vnd.api+json',
-      'Content-Type': 'application/vnd.api+json',
-      'Authorization': `Bearer ${process.env.LEMONSQUEEZY_API_KEY || ''}`,
-    },
-    body: JSON.stringify({
-      data: {
-        type: 'checkouts',
-        attributes: {
-          checkout_data: {
-            email,
-            custom: { user_id: userId },
-          },
-          product_options: {
-            redirect_url: successUrl,
-          },
-        },
-        relationships: {
-          store: { data: { type: 'stores', id: process.env.LEMONSQUEEZY_STORE_ID || '' } },
-          variant: { data: { type: 'variants', id: process.env.LEMONSQUEEZY_VARIANT_ID || '' } },
-        },
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  let response: Response;
+  try {
+    response = await fetch(`${LS_API_BASE}/checkouts`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/vnd.api+json',
+        'Content-Type': 'application/vnd.api+json',
+        'Authorization': `Bearer ${process.env.LEMONSQUEEZY_API_KEY || ''}`,
       },
-    }),
-  });
+      body: JSON.stringify({
+        data: {
+          type: 'checkouts',
+          attributes: {
+            checkout_data: {
+              email,
+              custom: { user_id: userId },
+            },
+            product_options: {
+              redirect_url: successUrl,
+            },
+          },
+          relationships: {
+            store: { data: { type: 'stores', id: process.env.LEMONSQUEEZY_STORE_ID || '' } },
+            variant: { data: { type: 'variants', id: process.env.LEMONSQUEEZY_VARIANT_ID || '' } },
+          },
+        },
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

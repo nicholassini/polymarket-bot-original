@@ -56,7 +56,7 @@ export interface DashboardPayload {
 
 export function computePerformance(
   wallet: WalletState,
-  trades: TradeRecord[],
+  trades: readonly TradeRecord[],
   unrealizedPnl: number,
 ): PerformanceSnapshot {
   // Compute real win rate from actual trades
@@ -100,7 +100,7 @@ export function computePerformance(
 
 export function buildDashboardPayload(
   wallets: WalletState[],
-  tradesByWallet: Map<string, TradeRecord[]>,
+  tradesByWallet: Map<string, readonly TradeRecord[]>,
   marketPrices?: Map<string, number>,
   pausedWallets?: Set<string>,
   displayNames?: Map<string, string>,
