@@ -26,8 +26,8 @@ export class OrderRouter {
     const state = wallet.getState();
     const risk = this.riskEngine.check(order, state);
     if (!risk.ok) {
-      logger.warn({ walletId: order.walletId, reason: risk.reason }, 'Risk check failed');
-      consoleLog.warn('RISK', `Risk rejected: ${risk.reason} [${order.walletId}] ${order.side} ${order.outcome} ×${order.size}`, {
+      logger.debug({ walletId: order.walletId, reason: risk.reason }, 'Risk check failed');
+      consoleLog.debug('RISK', `Risk rejected: ${risk.reason} [${order.walletId}] ${order.side} ${order.outcome} ×${order.size}`, {
         walletId: order.walletId,
         marketId: order.marketId,
         reason: risk.reason,
