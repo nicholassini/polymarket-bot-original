@@ -1,4 +1,15 @@
 import 'dotenv/config';
+
+/* ── Global crash handlers — must be first so no error is ever silent ── */
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled rejection:', reason);
+  process.exit(1);
+});
+
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
@@ -314,4 +325,7 @@ program
     logger.info({ walletId: options.id }, 'Wallet removed');
   });
 
-program.parseAsync(process.argv);
+program.parseAsync(process.argv).catch((err) => {
+  console.error('[FATAL] CLI error:', err);
+  process.exit(1);
+});

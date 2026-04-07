@@ -31,7 +31,7 @@ COPY --from=build /app/config.yaml ./
 RUN mkdir -p /data
 
 ENV NODE_ENV=production
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 ENV PORT=3000
 ENV DATA_DIR=/data
 
