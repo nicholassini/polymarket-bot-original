@@ -3,6 +3,7 @@ import { FillSimulator } from '../paper_trading/fill_simulator';
 import { PnlTracker } from '../paper_trading/pnl_tracker';
 import { logger } from '../reporting/logs';
 import { consoleLog } from '../reporting/console_log';
+import type { TradingDB } from '../storage/trading_db';
 
 export class PaperWallet {
   private static readonly MAX_TRADE_HISTORY = 10_000;
@@ -11,8 +12,10 @@ export class PaperWallet {
   private readonly pnlTracker = new PnlTracker();
   private readonly trades: TradeRecord[] = [];
   private displayName: string = '';
+  private readonly tradingDb: TradingDB | null;
 
-  constructor(config: WalletConfig, assignedStrategy: string) {
+  constructor(config: WalletConfig, assignedStrategy: string, tradingDb?: TradingDB) {
+    this.tradingDb = tradingDb ?? null;
     this.displayName = config.id;
     this.state = {
       walletId: config.id,
@@ -30,6 +33,18 @@ export class PaperWallet {
         maxDrawdown: config.riskLimits?.maxDrawdown ?? 0.2,
       },
     };
+
+    // Restore persisted state if available
+    if (this.tradingDb) {
+      const saved = this.tradingDb.loadWalletState(config.id);
+      if (saved) {
+        this.state.availableBalance = saved.availableBalance;
+        this.state.realizedPnl = saved.realizedPnl;
+        this.state.openPositions = this.tradingDb.loadPositions(config.id);
+        this.trades.push(...this.tradingDb.loadTrades(config.id));
+        logger.info({ walletId: config.id, trades: this.trades.length, positions: this.state.openPositions.length, pnl: saved.realizedPnl }, 'Restored wallet state from database');
+      }
+    }
   }
 
   getState(): WalletState {
@@ -85,7 +100,7 @@ export class PaperWallet {
     const cost = fill.price * fill.size * (fill.side === 'BUY' ? 1 : -1);
     this.state.availableBalance -= cost;
 
-    this.trades.push({
+    const tradeRecord: TradeRecord = {
       orderId: fill.orderId,
       walletId: this.state.walletId,
       marketId: fill.marketId,
@@ -98,10 +113,19 @@ export class PaperWallet {
       cumulativePnl: this.state.realizedPnl,
       balanceAfter: this.state.availableBalance,
       timestamp: fill.timestamp,
-    });
+    };
+
+    this.trades.push(tradeRecord);
 
     if (this.trades.length > PaperWallet.MAX_TRADE_HISTORY) {
       this.trades.splice(0, this.trades.length - PaperWallet.MAX_TRADE_HISTORY);
+    }
+
+    // Persist trade, positions, and wallet state to disk
+    if (this.tradingDb) {
+      this.tradingDb.saveTrade(tradeRecord);
+      this.tradingDb.savePositions(this.state.walletId, this.state.openPositions);
+      this.tradingDb.saveWalletState(this.state.walletId, this.state.availableBalance, this.state.realizedPnl, this.state.capitalAllocated);
     }
 
     logger.info(

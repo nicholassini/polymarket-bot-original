@@ -95,7 +95,7 @@ polymarket:
 # ── Whale Tracking Engine ──────────────────────────────────────────────────
 whale_tracking:
   enabled: true
-  dbPath: .runtime/whales.db
+  # dbPath defaults to $DATA_DIR/whales.db (omit to use default)
 
   # Ingestion
   pollIntervalMs: 30000

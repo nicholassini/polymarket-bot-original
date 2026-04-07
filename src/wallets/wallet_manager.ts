@@ -2,6 +2,7 @@ import { PaperWallet } from './paper_wallet';
 import { PolymarketWallet } from './polymarket_wallet';
 import { WalletState, WalletConfig, TradeRecord } from '../types';
 import { logger } from '../reporting/logs';
+import type { TradingDB } from '../storage/trading_db';
 
 export interface ExecutionWallet {
   getState(): WalletState;
@@ -23,6 +24,15 @@ export interface ExecutionWallet {
 
 export class WalletManager {
   private readonly wallets = new Map<string, ExecutionWallet>();
+  private tradingDb: TradingDB | undefined;
+
+  setTradingDb(db: TradingDB): void {
+    this.tradingDb = db;
+  }
+
+  getTradingDb(): TradingDB | undefined {
+    return this.tradingDb;
+  }
 
   registerWallet(config: WalletConfig, assignedStrategy: string, enableLive: boolean): void {
     if (this.wallets.has(config.id)) {
@@ -40,7 +50,7 @@ export class WalletManager {
     const wallet =
       config.mode === 'LIVE'
         ? new PolymarketWallet(config, assignedStrategy)
-        : new PaperWallet(config, assignedStrategy);
+        : new PaperWallet(config, assignedStrategy, this.tradingDb);
 
     this.wallets.set(config.id, wallet);
     const state = wallet.getState();

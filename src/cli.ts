@@ -29,9 +29,11 @@ import { WhaleService } from './whales/whale_service';
 import { WhaleAPI } from './whales/whale_api';
 import { DEFAULT_WHALE_CONFIG, DEFAULT_SCANNER_CONFIG, DEFAULT_API_POOL_CONFIG, DEFAULT_FAST_SCAN_CONFIG, DEFAULT_EXCHANGE_SOURCES } from './whales/whale_types';
 import type { WhaleTrackingConfig, ScannerConfig } from './whales/whale_types';
+import { TradingDB } from './storage/trading_db';
 
 const program = new Command();
-const statePath = path.resolve('.runtime/state.json');
+const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+const statePath = path.resolve(dataDir, 'state.json');
 
 /* ── Config normalization helpers ── */
 
@@ -194,7 +196,9 @@ program
   .option('-c, --config <path>', 'Config path', 'config.yaml')
   .action(async (options: { config: string }) => {
     const config = loadConfig(options.config);
+    const tradingDb = new TradingDB();
     const walletManager = new WalletManager();
+    walletManager.setTradingDb(tradingDb);
     for (const wallet of config.wallets) {
       walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading);
     }

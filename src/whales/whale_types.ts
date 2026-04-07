@@ -811,7 +811,7 @@ export interface WhaleTrackingConfig {
 
 export const DEFAULT_WHALE_CONFIG: WhaleTrackingConfig = {
   enabled: true,
-  dbPath: '.runtime/whales.db',
+  dbPath: (process.env.DATA_DIR || 'data') + '/whales.db',
   pollIntervalMs: 30_000,
   backfillBatchSize: 100,
   maxRequestsPerMinute: 30,

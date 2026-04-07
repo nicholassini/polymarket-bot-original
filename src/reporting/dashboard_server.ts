@@ -817,9 +817,10 @@ export class DashboardServer {
         },
       };
 
+      const tradingDb = this.walletManager.getTradingDb();
       const wallet = cfg.mode === 'LIVE'
         ? new PolymarketWallet(walletConfig, cfg.strategy)
-        : new PaperWallet(walletConfig, cfg.strategy);
+        : new PaperWallet(walletConfig, cfg.strategy, tradingDb);
 
       this.walletManager.addWallet(wallet);
       this.engine.addRunner(cfg.walletId, cfg.strategy);
@@ -1550,7 +1551,7 @@ export class DashboardServer {
             maxDrawdown: 0.2,
           },
         };
-        const wallet = new PaperWallet(walletConfig, sw.strategy);
+        const wallet = new PaperWallet(walletConfig, sw.strategy, this.walletManager.getTradingDb());
         this.walletManager.addWallet(wallet);
         this.userDb.assignWallet(sw.id, userId);
         this.userDb.saveWalletConfig(sw.id, userId, sw.strategy, sw.capital, 'PAPER', walletConfig.riskLimits);
@@ -1652,7 +1653,7 @@ export class DashboardServer {
       };
       const wallet = mode === 'LIVE'
         ? new PolymarketWallet(walletConfig, strategy)
-        : new PaperWallet(walletConfig, strategy);
+        : new PaperWallet(walletConfig, strategy, this.walletManager.getTradingDb());
       this.walletManager.addWallet(wallet);
 
       /* Associate wallet with the authenticated user */
@@ -1686,6 +1687,9 @@ export class DashboardServer {
         this.userDb.removeWalletConfig(walletId);
         userWalletIds.delete(walletId);
         this.walletDisplayNames.delete(walletId);
+        // Clean up persisted trading data
+        const tradingDb = this.walletManager.getTradingDb();
+        if (tradingDb) tradingDb.deleteWalletData(walletId);
         this.userDb.trackEvent('wallet_delete', userId, { walletId });
         json(res, 200, { ok: true, message: `Wallet "${walletId}" removed` });
       } else {
@@ -1919,7 +1923,7 @@ export class DashboardServer {
         };
         const wallet = mode === 'LIVE'
           ? new PolymarketWallet(walletConfig, 'custom_composite')
-          : new PaperWallet(walletConfig, 'custom_composite');
+          : new PaperWallet(walletConfig, 'custom_composite', this.walletManager.getTradingDb());
         this.walletManager.addWallet(wallet);
         this.userDb.assignWallet(walletId, userId);
         this.userDb.saveWalletConfig(walletId, userId, 'custom_composite', capital, mode, walletConfig.riskLimits);
