@@ -105,12 +105,13 @@ export class TradingDB {
     this._insertTrade.run(trade);
   }
 
-  loadTrades(walletId: string, limit = 10_000): TradeRecord[] {
+  loadTrades(walletId: string, limit = 500): TradeRecord[] {
     const rows = this.db.prepare(
       `SELECT order_id, wallet_id, market_id, outcome, side, price, size, cost,
               realized_pnl, cumulative_pnl, balance_after, timestamp
-       FROM trades WHERE wallet_id = ? ORDER BY timestamp ASC LIMIT ?`
+       FROM trades WHERE wallet_id = ? ORDER BY timestamp DESC LIMIT ?`
     ).all(walletId, limit) as Array<Record<string, unknown>>;
+    rows.reverse(); // restore chronological order
 
     return rows.map((r) => ({
       orderId: r.order_id as string,
@@ -199,6 +200,18 @@ export class TradingDB {
       this.db.prepare(`DELETE FROM wallet_state WHERE wallet_id = ?`).run(walletId);
     });
     txn();
+  }
+
+  /** Delete trades older than `maxAgeDays` to prevent unbounded DB growth. */
+  pruneOldTrades(maxAgeDays = 30): number {
+    const cutoff = Date.now() - maxAgeDays * 86_400_000;
+    const result = this.db.prepare(
+      `DELETE FROM trades WHERE timestamp < ?`
+    ).run(cutoff);
+    if (result.changes > 0) {
+      this.db.pragma('incremental_vacuum');
+    }
+    return result.changes;
   }
 
   close(): void {

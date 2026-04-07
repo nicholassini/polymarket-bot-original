@@ -6,7 +6,7 @@ import { consoleLog } from '../reporting/console_log';
 import type { TradingDB } from '../storage/trading_db';
 
 export class PaperWallet {
-  private static readonly MAX_TRADE_HISTORY = 10_000;
+  private static readonly MAX_TRADE_HISTORY = 500;
   private state: WalletState;
   private readonly fillSimulator = new FillSimulator();
   private readonly pnlTracker = new PnlTracker();
@@ -36,6 +36,8 @@ export class PaperWallet {
 
     // Restore persisted state if available
     if (this.tradingDb) {
+      // Prune trades older than 30 days to prevent unbounded DB growth
+      this.tradingDb.pruneOldTrades(30);
       const saved = this.tradingDb.loadWalletState(config.id);
       if (saved) {
         this.state.availableBalance = saved.availableBalance;

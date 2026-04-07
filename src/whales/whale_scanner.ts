@@ -413,7 +413,7 @@ class ApiPool {
 
 export class WhaleScanner {
   private static readonly MAX_GLOBAL_AGG = 5_000;
-  private static readonly MAX_SEEN_TRADE_HASHES = 50_000;
+  private static readonly MAX_SEEN_TRADE_HASHES = 10_000;
   private static readonly MAX_CLUSTER_SIGNALS = 500;
   private static readonly MAX_BIG_TRADE_ADDRESSES = 2_000;
   private static readonly MAX_COPY_SIM_RESULTS = 2_000;

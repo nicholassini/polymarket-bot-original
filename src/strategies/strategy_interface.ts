@@ -25,7 +25,7 @@ export abstract class BaseStrategy implements StrategyInterface {
 
   /** Live market cache populated by onMarketUpdate(). Capped at MAX_MARKETS. */
   protected markets = new Map<string, MarketData>();
-  private static readonly MAX_MARKETS = 5_000;
+  private static readonly MAX_MARKETS = 1_000;
 
   /**
    * Exit orders queued by managePositions() — the engine drains and
