@@ -764,6 +764,7 @@ export class DashboardServer {
   private engine?: Engine;
   private sseClients = new Map<http.ServerResponse, string>(); // response → userId
   private sseInterval?: ReturnType<typeof setInterval>;
+  private memInterval?: ReturnType<typeof setInterval>;
   private ssePayloadCache = new Map<string, { json: string; ts: number }>(); // userId → cached JSON
   private readonly walletDisplayNames = new Map<string, string>();
   private readonly userDb: UserDB;
@@ -929,10 +930,30 @@ export class DashboardServer {
           this.sseClients.delete(client);
         }
       }
+
+      // Evict stale ssePayloadCache entries (users who disconnected)
+      const activeUserIds = new Set(this.sseClients.values());
+      for (const uid of this.ssePayloadCache.keys()) {
+        if (!activeUserIds.has(uid)) this.ssePayloadCache.delete(uid);
+      }
     }, 5000);
+
+    // Log heap memory every 60s for leak tracking
+    this.memInterval = setInterval(() => {
+      const mem = process.memoryUsage();
+      const rss = (mem.rss / 1024 / 1024).toFixed(0);
+      const heap = (mem.heapUsed / 1024 / 1024).toFixed(0);
+      const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(0);
+      const ext = (mem.external / 1024 / 1024).toFixed(0);
+      logger.info({ rss: +rss, heapUsed: +heap, heapTotal: +heapTotal, external: +ext, sseClients: this.sseClients.size, sseCache: this.ssePayloadCache.size }, `MEMORY: RSS=${rss}MB heap=${heap}/${heapTotal}MB ext=${ext}MB clients=${this.sseClients.size}`);
+    }, 60_000);
   }
 
   stop(): void {
+    if (this.memInterval) {
+      clearInterval(this.memInterval);
+      this.memInterval = undefined;
+    }
     if (this.sseInterval) {
       clearInterval(this.sseInterval);
       this.sseInterval = undefined;

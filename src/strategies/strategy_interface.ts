@@ -23,8 +23,9 @@ export abstract class BaseStrategy implements StrategyInterface {
   abstract readonly name: string;
   protected context?: StrategyContext;
 
-  /** Live market cache populated by onMarketUpdate() */
+  /** Live market cache populated by onMarketUpdate(). Capped at MAX_MARKETS. */
   protected markets = new Map<string, MarketData>();
+  private static readonly MAX_MARKETS = 5_000;
 
   /**
    * Exit orders queued by managePositions() — the engine drains and
@@ -38,6 +39,7 @@ export abstract class BaseStrategy implements StrategyInterface {
    */
   private tradeCooldowns = new Map<string, number>();
   protected cooldownMs = 60_000;
+  private lastCooldownPrune = 0;
 
   initialize(context: StrategyContext): void {
     this.context = context;
@@ -45,6 +47,15 @@ export abstract class BaseStrategy implements StrategyInterface {
 
   onMarketUpdate(data: MarketData): void {
     this.markets.set(data.marketId, data);
+    // Evict oldest entries when map exceeds cap (FIFO)
+    if (this.markets.size > BaseStrategy.MAX_MARKETS) {
+      const excess = this.markets.size - BaseStrategy.MAX_MARKETS;
+      const iter = this.markets.keys();
+      for (let i = 0; i < excess; i++) {
+        const key = iter.next().value;
+        if (key !== undefined) this.markets.delete(key);
+      }
+    }
   }
 
   onTimer(): void {
@@ -102,7 +113,16 @@ export abstract class BaseStrategy implements StrategyInterface {
   notifyFill(order: OrderRequest): void {
     // Record cooldown only after a successful fill, not at sizing time
     const key = `${order.marketId}:${order.outcome}:${order.side}`;
-    this.tradeCooldowns.set(key, Date.now());
+    const now = Date.now();
+    this.tradeCooldowns.set(key, now);
+
+    // Prune expired cooldowns every 5 minutes
+    if (now - this.lastCooldownPrune > 300_000) {
+      this.lastCooldownPrune = now;
+      for (const [k, ts] of this.tradeCooldowns) {
+        if (now - ts > this.cooldownMs * 2) this.tradeCooldowns.delete(k);
+      }
+    }
   }
 
   managePositions(): void {
@@ -117,6 +137,8 @@ export abstract class BaseStrategy implements StrategyInterface {
   }
 
   shutdown(): void {
-    return;
+    this.markets.clear();
+    this.tradeCooldowns.clear();
+    this.pendingExits = [];
   }
 }

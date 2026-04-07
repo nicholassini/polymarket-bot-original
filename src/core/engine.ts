@@ -19,6 +19,7 @@ export class Engine {
   private readonly stream: OrderbookStream;
   private readonly runners: StrategyRunner[] = [];
   private readonly pausedWallets = new Set<string>();
+  private marketUpdateHandler?: (data: MarketData) => void;
 
   constructor(
     private readonly config: AppConfig,
@@ -61,7 +62,8 @@ export class Engine {
       });
     }
 
-    this.stream.on('update', (data) => this.handleMarketUpdate(data));
+    this.marketUpdateHandler = (data) => this.handleMarketUpdate(data);
+    this.stream.on('update', this.marketUpdateHandler);
   }
 
   start(): void {
@@ -76,7 +78,14 @@ export class Engine {
 
   stop(): void {
     this.scheduler.stop();
+    if (this.marketUpdateHandler) {
+      this.stream.removeListener('update', this.marketUpdateHandler);
+      this.marketUpdateHandler = undefined;
+    }
     this.stream.stop();
+    for (const runner of this.runners) {
+      runner.strategy.shutdown();
+    }
     logger.info('Engine stopped');
     consoleLog.warn('ENGINE', 'Engine stopped');
   }

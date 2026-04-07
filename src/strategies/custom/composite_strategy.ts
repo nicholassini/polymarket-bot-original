@@ -147,6 +147,18 @@ export class CompositeStrategy extends BaseStrategy {
     vols.push(data.volume24h);
     if (vols.length > 30) vols.shift();
     this.volumeHistory.set(data.marketId, vols);
+
+    // Cap map sizes to avoid unbounded growth
+    if (this.priceHistory.size > 5_000) {
+      const iter = this.priceHistory.keys();
+      for (let i = 0; i < 500; i++) {
+        const k = iter.next().value;
+        if (k !== undefined) {
+          this.priceHistory.delete(k);
+          this.volumeHistory.delete(k);
+        }
+      }
+    }
   }
 
   /* ── Signal Generation ──────────────────────────────────────── */
