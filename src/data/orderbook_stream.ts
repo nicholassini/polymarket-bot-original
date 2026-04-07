@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import { MarketData } from '../types';
 import { MarketFetcher } from './market_fetcher';
@@ -12,7 +13,7 @@ import { consoleLog } from '../reporting/console_log';
  */
 export class OrderbookStream extends EventEmitter {
   private static readonly MAX_CACHE_SIZE = 5_000;
-  private static readonly MAX_SEEN_MARKETS = 50_000;
+  private static readonly MAX_SEEN_MARKETS = 10_000;
   private timer?: NodeJS.Timeout;
   private readonly fetcher: MarketFetcher;
   private readonly pollMs: number;
@@ -22,6 +23,8 @@ export class OrderbookStream extends EventEmitter {
   private readonly seenMarkets = new Map<string, { firstSeenAt: string; lastSeenAt: string }>();
   private readonly seenCachePath: string;
   private pollCount = 0;
+  private lastPersistAt = 0;
+  private persistPending = false;
 
   constructor(
     gammaApi?: string,
@@ -124,17 +127,30 @@ export class OrderbookStream extends EventEmitter {
   }
 
   private persistSeenCache(): void {
-    try {
-      const dir = path.dirname(this.seenCachePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const payload: Record<string, { firstSeenAt: string; lastSeenAt: string }> = {};
-      for (const [marketId, entry] of this.seenMarkets.entries()) {
-        payload[marketId] = { firstSeenAt: entry.firstSeenAt, lastSeenAt: entry.lastSeenAt };
-      }
-      fs.writeFileSync(this.seenCachePath, JSON.stringify(payload, null, 2));
-    } catch (error) {
-      logger.warn({ error }, 'OrderbookStream failed to persist market cache');
+    // Debounce: write at most once every 5 minutes, async to avoid blocking
+    const now = Date.now();
+    if (now - this.lastPersistAt < 300_000 || this.persistPending) return;
+    this.persistPending = true;
+    this.lastPersistAt = now;
+
+    const payload: Record<string, { firstSeenAt: string; lastSeenAt: string }> = {};
+    for (const [marketId, entry] of this.seenMarkets.entries()) {
+      payload[marketId] = { firstSeenAt: entry.firstSeenAt, lastSeenAt: entry.lastSeenAt };
     }
+    const data = JSON.stringify(payload);
+
+    const dir = path.dirname(this.seenCachePath);
+    const doWrite = async () => {
+      try {
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(this.seenCachePath, data);
+      } catch (error) {
+        logger.warn({ error }, 'OrderbookStream failed to persist market cache');
+      } finally {
+        this.persistPending = false;
+      }
+    };
+    void doWrite();
   }
 
   private updateSeenCache(markets: MarketData[]): number {
@@ -166,11 +182,12 @@ export class OrderbookStream extends EventEmitter {
       }
     }
     if (this.seenMarkets.size > OrderbookStream.MAX_SEEN_MARKETS) {
-      const entries = [...this.seenMarkets.entries()]
-        .sort((a, b) => a[1].lastSeenAt.localeCompare(b[1].lastSeenAt));
+      // FIFO eviction: Map iterates in insertion order, delete oldest
       const excess = this.seenMarkets.size - OrderbookStream.MAX_SEEN_MARKETS;
+      const iter = this.seenMarkets.keys();
       for (let i = 0; i < excess; i++) {
-        this.seenMarkets.delete(entries[i][0]);
+        const key = iter.next().value;
+        if (key !== undefined) this.seenMarkets.delete(key);
       }
     }
   }

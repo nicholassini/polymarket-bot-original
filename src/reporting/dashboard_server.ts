@@ -885,29 +885,39 @@ export class DashboardServer {
       );
     });
 
-    // Broadcast dashboard data to SSE clients every second (per-user scoped)
+    // Broadcast dashboard data to SSE clients (per-user scoped)
+    // Cache payloads per-userId to avoid redundant buildDashboardPayload + JSON.stringify
     this.sseInterval = setInterval(() => {
       if (this.sseClients.size === 0) return;
       const allWallets = this.walletManager.listWallets();
       const allTrades = this.walletManager.getAllTradeHistories();
       const prices = this.getLiveMarketPrices();
       const paused = this.engine?.getPausedWallets();
+      const jsonCache = new Map<string, string>(); // userId → serialised payload
 
       for (const [client, userId] of this.sseClients) {
         try {
-          const userWalletIds = new Set(this.userDb.getWalletIds(userId));
-          const userWallets = allWallets.filter(w => userWalletIds.has(w.walletId));
-          const userTrades = new Map<string, import('../types').TradeRecord[]>();
-          for (const [wid, trades] of allTrades) {
-            if (userWalletIds.has(wid)) userTrades.set(wid, trades);
+          let jsonStr = jsonCache.get(userId);
+          if (!jsonStr) {
+            const userWalletIds = new Set(this.userDb.getWalletIds(userId));
+            const userWallets = allWallets.filter(w => userWalletIds.has(w.walletId));
+            const userTrades = new Map<string, import('../types').TradeRecord[]>();
+            for (const [wid, trades] of allTrades) {
+              if (userWalletIds.has(wid)) {
+                // Cap trade history to last 500 to avoid massive payloads
+                userTrades.set(wid, trades.length > 500 ? trades.slice(-500) : trades);
+              }
+            }
+            const payload = buildDashboardPayload(userWallets, userTrades, prices, paused, this.walletDisplayNames);
+            jsonStr = JSON.stringify(payload);
+            jsonCache.set(userId, jsonStr);
           }
-          const payload = buildDashboardPayload(userWallets, userTrades, prices, paused, this.walletDisplayNames);
-          client.write(`event: dashboard\ndata: ${JSON.stringify(payload)}\n\n`);
+          client.write(`event: dashboard\ndata: ${jsonStr}\n\n`);
         } catch {
           this.sseClients.delete(client);
         }
       }
-    }, 3000);
+    }, 5000);
   }
 
   stop(): void {

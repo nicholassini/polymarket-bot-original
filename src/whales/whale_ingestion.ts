@@ -326,15 +326,19 @@ export class WhaleIngestion {
 
   private recordRequest(): void {
     this.requestTimestamps.push(Date.now());
-    // Trim old entries
+    // Trim old entries in-place (avoid allocating a new array every call)
     const cutoff = Date.now() - 60_000;
-    this.requestTimestamps = this.requestTimestamps.filter((t) => t >= cutoff);
+    let i = 0;
+    while (i < this.requestTimestamps.length && this.requestTimestamps[i] < cutoff) i++;
+    if (i > 0) this.requestTimestamps.splice(0, i);
   }
 
   private async rateLimitWait(): Promise<void> {
     const maxReq = this.config.maxRequestsPerMinute;
     const cutoff = Date.now() - 60_000;
-    this.requestTimestamps = this.requestTimestamps.filter((t) => t >= cutoff);
+    let i = 0;
+    while (i < this.requestTimestamps.length && this.requestTimestamps[i] < cutoff) i++;
+    if (i > 0) this.requestTimestamps.splice(0, i);
     if (this.requestTimestamps.length >= maxReq) {
       const oldest = this.requestTimestamps[0];
       const waitMs = oldest + 60_000 - Date.now() + 100; // +100ms buffer

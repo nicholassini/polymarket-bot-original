@@ -295,7 +295,9 @@ class ApiPool {
         let best = candidates[0];
         let bestLoad = Infinity;
         for (const ep of candidates) {
-          ep.requestTimestamps = ep.requestTimestamps.filter((t) => t >= cutoff);
+          let idx = 0;
+          while (idx < ep.requestTimestamps.length && ep.requestTimestamps[idx] < cutoff) idx++;
+          if (idx > 0) ep.requestTimestamps.splice(0, idx);
           const load = ep.requestTimestamps.length / ep.maxRequestsPerMinute;
           if (load < bestLoad) {
             bestLoad = load;
@@ -338,7 +340,9 @@ class ApiPool {
   /** Wait until this endpoint has capacity within its rate limit */
   async waitForCapacity(ep: ApiEndpoint): Promise<void> {
     const cutoff = Date.now() - 60_000;
-    ep.requestTimestamps = ep.requestTimestamps.filter((t) => t >= cutoff);
+    let i = 0;
+    while (i < ep.requestTimestamps.length && ep.requestTimestamps[i] < cutoff) i++;
+    if (i > 0) ep.requestTimestamps.splice(0, i);
     if (ep.requestTimestamps.length >= ep.maxRequestsPerMinute) {
       const oldest = ep.requestTimestamps[0];
       const waitMs = oldest + 60_000 - Date.now() + 50;
@@ -394,11 +398,11 @@ class ApiPool {
 }
 
 export class WhaleScanner {
-  private static readonly MAX_GLOBAL_AGG = 50_000;
-  private static readonly MAX_SEEN_TRADE_HASHES = 500_000;
-  private static readonly MAX_CLUSTER_SIGNALS = 1_000;
-  private static readonly MAX_BIG_TRADE_ADDRESSES = 10_000;
-  private static readonly MAX_COPY_SIM_RESULTS = 5_000;
+  private static readonly MAX_GLOBAL_AGG = 10_000;
+  private static readonly MAX_SEEN_TRADE_HASHES = 100_000;
+  private static readonly MAX_CLUSTER_SIGNALS = 500;
+  private static readonly MAX_BIG_TRADE_ADDRESSES = 5_000;
+  private static readonly MAX_COPY_SIM_RESULTS = 2_000;
 
   private db: WhaleDB;
   private config: WhaleTrackingConfig;
@@ -1003,9 +1007,11 @@ export class WhaleScanner {
       }
     }
 
-    // requestTimestamps: keep only last 60s
+    // requestTimestamps: keep only last 60s (in-place)
     const cutoff = Date.now() - 60_000;
-    this.requestTimestamps = this.requestTimestamps.filter((t) => t >= cutoff);
+    let pi = 0;
+    while (pi < this.requestTimestamps.length && this.requestTimestamps[pi] < cutoff) pi++;
+    if (pi > 0) this.requestTimestamps.splice(0, pi);
   }
 
   /* ━━━━━━━━━━━━━━ Step 1: Fetch ALL liquid markets (paginated) ━━━━━━━━━━━━━━ */
@@ -1836,7 +1842,9 @@ export class WhaleScanner {
   private async rateLimitWait(): Promise<void> {
     const maxReq = this.config.maxRequestsPerMinute;
     const cutoff = Date.now() - 60_000;
-    this.requestTimestamps = this.requestTimestamps.filter((t) => t >= cutoff);
+    let ri = 0;
+    while (ri < this.requestTimestamps.length && this.requestTimestamps[ri] < cutoff) ri++;
+    if (ri > 0) this.requestTimestamps.splice(0, ri);
     if (this.requestTimestamps.length >= maxReq) {
       const oldest = this.requestTimestamps[0];
       const waitMs = oldest + 60_000 - Date.now() + 50;  // reduced buffer from 100→50
