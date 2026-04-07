@@ -37,6 +37,7 @@ export class WhaleService {
   private clobApi: string;
   private gammaApi: string;
   private analyticsTimer: ReturnType<typeof setInterval> | null = null;
+  private analyticsInProgress = false;
   private running = false;
 
   constructor(config: WhaleTrackingConfig, clobApi: string, gammaApi: string) {
@@ -452,7 +453,8 @@ export class WhaleService {
   /* ━━━━━━━━━━━━━━ Internal helpers ━━━━━━━━━━━━━━ */
 
   private async refreshAllAnalytics(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running || this.analyticsInProgress) return;
+    this.analyticsInProgress = true;
     try {
       const { whales } = this.db.listWhales({ trackingEnabled: true, limit: 1000 });
       for (const whale of whales) {
@@ -461,6 +463,8 @@ export class WhaleService {
       }
     } catch (err) {
       logger.error({ err }, 'Analytics refresh error');
+    } finally {
+      this.analyticsInProgress = false;
     }
   }
 

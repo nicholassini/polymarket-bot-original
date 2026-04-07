@@ -22,6 +22,8 @@ interface Lot {
 export class WhaleAnalytics {
   private db: WhaleDB;
   private config: WhaleTrackingConfig;
+  private _tradeCache: WhaleTrade[] | null = null;
+  private _tradeCacheWhaleId: number | null = null;
 
   constructor(db: WhaleDB, config: WhaleTrackingConfig) {
     this.db = db;
@@ -31,12 +33,19 @@ export class WhaleAnalytics {
   /* ━━━━━━━━━━━━━━ Full recalculation for a whale ━━━━━━━━━━━━━━ */
 
   computeAllMetrics(whaleId: number): void {
-    this.buildSettlementLedger(whaleId);
-    this.computeDailyMetrics(whaleId);
-    const score = this.computeScore(whaleId);
-    const style = this.classifyStyle(whaleId);
-    this.db.updateWhale(whaleId, { style });
-    logger.debug({ whaleId, score: score.overall, style }, 'Computed whale metrics');
+    this._tradeCache = null;
+    this._tradeCacheWhaleId = null;
+    try {
+      this.buildSettlementLedger(whaleId);
+      this.computeDailyMetrics(whaleId);
+      const score = this.computeScore(whaleId);
+      const style = this.classifyStyle(whaleId);
+      this.db.updateWhale(whaleId, { style });
+      logger.debug({ whaleId, score: score.overall, style }, 'Computed whale metrics');
+    } finally {
+      this._tradeCache = null;
+      this._tradeCacheWhaleId = null;
+    }
   }
 
   /* ━━━━━━━━━━━━━━ Settlement Ledger (FIFO / AVG) ━━━━━━━━━━━━━━ */
@@ -463,8 +472,12 @@ export class WhaleAnalytics {
   /* ━━━━━━━━━━━━━━ Helpers ━━━━━━━━━━━━━━ */
 
   private getAllTradesSorted(whaleId: number): WhaleTrade[] {
-    // Fetch all trades (paginate via large limit) — DB returns DESC, we need ASC
-    const trades = this.db.getWhaleTrades(whaleId, { limit: 100_000 });
-    return trades.reverse();
+    if (this._tradeCache && this._tradeCacheWhaleId === whaleId) return this._tradeCache;
+    // Fetch recent trades (capped to prevent OOM) — DB returns DESC, we need ASC
+    const trades = this.db.getWhaleTrades(whaleId, { limit: 10_000 });
+    const sorted = trades.reverse();
+    this._tradeCache = sorted;
+    this._tradeCacheWhaleId = whaleId;
+    return sorted;
   }
 }

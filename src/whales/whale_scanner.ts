@@ -412,13 +412,13 @@ class ApiPool {
 }
 
 export class WhaleScanner {
-  private static readonly MAX_GLOBAL_AGG = 10_000;
-  private static readonly MAX_SEEN_TRADE_HASHES = 100_000;
+  private static readonly MAX_GLOBAL_AGG = 5_000;
+  private static readonly MAX_SEEN_TRADE_HASHES = 50_000;
   private static readonly MAX_CLUSTER_SIGNALS = 500;
-  private static readonly MAX_BIG_TRADE_ADDRESSES = 5_000;
+  private static readonly MAX_BIG_TRADE_ADDRESSES = 2_000;
   private static readonly MAX_COPY_SIM_RESULTS = 2_000;
   private static readonly MAX_TRADES_PER_MARKET = 100;
-  private static readonly MAX_WALLET_BALANCES = 5_000;
+  private static readonly MAX_WALLET_BALANCES = 2_000;
   private static readonly MAX_MARKETS_PER_ADDRESS = 50;
 
   private db: WhaleDB;
@@ -863,6 +863,7 @@ export class WhaleScanner {
       /* ── All pages exhausted or scanner stopped ── */
 
       if (marketsProcessedThisBatch === 0 && totalQualifying === 0) {
+        this.pruneMemory();
         this.state.status = this.state.enabled ? 'scanning' : 'idle';
         this.state.scanDurationMs = Date.now() - batchStart;
         this.batchInProgress = false;
@@ -872,6 +873,7 @@ export class WhaleScanner {
 
       /* Check if we've done a full sweep (all qualifying markets already scanned) */
       if (marketsProcessedThisBatch === 0 && totalQualifying > 0) {
+        this.pruneMemory();
         this.rebuildProfiles();
         this.state.status = this.state.enabled ? 'scanning' : 'idle';
         this.state.scanDurationMs = Date.now() - batchStart;
@@ -972,6 +974,7 @@ export class WhaleScanner {
       this.state.scanDurationMs = Date.now() - batchStart;
       this.state.currentMarket = null;
       this.batchInProgress = false;
+      this.pruneMemory();
       logger.error({ err }, 'Scanner batch failed');
     }
   }
