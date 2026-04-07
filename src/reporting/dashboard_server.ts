@@ -1,5 +1,4 @@
 import http from 'http';
-import zlib from 'zlib';
 import { WalletManager } from '../wallets/wallet_manager';
 import { PaperWallet } from '../wallets/paper_wallet';
 import { PolymarketWallet } from '../wallets/polymarket_wallet';
@@ -707,14 +706,12 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-/** Check if the client accepts gzip encoding */
-function acceptsGzip(req: http.IncomingMessage): boolean {
-  return (req.headers['accept-encoding'] ?? '').toString().includes('gzip');
-}
-
-/** Send an HTML response, gzip-compressed if client supports it */
+/**
+ * Send an HTML response. NO server-side gzip — Railway's reverse proxy
+ * handles compression automatically. Doing gzipSync here blocks the event
+ * loop and double-compresses behind the proxy.
+ */
 function sendHtml(
-  req: http.IncomingMessage,
   res: http.ServerResponse,
   html: string,
   maxAge: number = 0,
@@ -724,41 +721,9 @@ function sendHtml(
   };
   if (maxAge > 0) {
     headers['Cache-Control'] = `public, max-age=${maxAge}, stale-while-revalidate=${maxAge * 2}`;
-    headers['Vary'] = 'Accept-Encoding';
   }
-  if (acceptsGzip(req)) {
-    headers['Content-Encoding'] = 'gzip';
-    res.writeHead(200, headers);
-    res.end(zlib.gzipSync(Buffer.from(html)));
-  } else {
-    res.writeHead(200, headers);
-    res.end(html);
-  }
-}
-
-/** Send pre-compressed static HTML (already gzipped buffer) */
-function sendPrecompressedHtml(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  gzBuf: Buffer,
-  rawHtmlFn: () => string,
-  maxAge: number = 0,
-): void {
-  const headers: Record<string, string> = {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Vary': 'Accept-Encoding',
-  };
-  if (maxAge > 0) {
-    headers['Cache-Control'] = `public, max-age=${maxAge}, stale-while-revalidate=${maxAge * 2}`;
-  }
-  if (acceptsGzip(req)) {
-    headers['Content-Encoding'] = 'gzip';
-    res.writeHead(200, headers);
-    res.end(gzBuf);
-  } else {
-    res.writeHead(200, headers);
-    res.end(rawHtmlFn());
-  }
+  res.writeHead(200, headers);
+  res.end(html);
 }
 
 /** Send a plain-text response with optional caching */
@@ -776,6 +741,20 @@ function sendText(
   res.end(text);
 }
 
+/* ─── Simple HTML page cache (avoids regenerating + re-stringifying on every hit) ─── */
+interface CachedPage { html: string; ts: number; }
+const PAGE_CACHE_TTL = 10_000; // 10 seconds
+const pageCache = new Map<string, CachedPage>();
+
+function getCachedHtml(key: string, generate: () => string): string {
+  const now = Date.now();
+  const cached = pageCache.get(key);
+  if (cached && now - cached.ts < PAGE_CACHE_TTL) return cached.html;
+  const html = generate();
+  pageCache.set(key, { html, ts: now });
+  return html;
+}
+
 /* ──────────────────────────────────────────────────────────────
    Dashboard Server class
    ────────────────────────────────────────────────────────────── */
@@ -788,10 +767,6 @@ export class DashboardServer {
   private readonly walletDisplayNames = new Map<string, string>();
   private readonly userDb: UserDB;
 
-  /* Pre-compressed page caches (generated once, served many times) */
-  private landingGz: Buffer | null = null;
-  private loginGz: Buffer | null = null;
-
   constructor(
     private readonly walletManager: WalletManager,
     private readonly port = 3000,
@@ -802,10 +777,6 @@ export class DashboardServer {
     if (restored > 0) {
       console.log(`[DashboardServer] Loaded ${restored} persisted setting(s) from database`);
     }
-
-    // Pre-compress static pages on startup for fast serving
-    zlib.gzip(Buffer.from(getLandingHtml()), (_, buf) => { if (buf) this.landingGz = buf; });
-    zlib.gzip(Buffer.from(getLoginHtml()), (_, buf) => { if (buf) this.loginGz = buf; });
   }
 
   setWhaleApi(api: WhaleAPI): void {
@@ -936,7 +907,7 @@ export class DashboardServer {
           this.sseClients.delete(client);
         }
       }
-    }, 1000);
+    }, 3000);
   }
 
   stop(): void {
@@ -982,20 +953,12 @@ export class DashboardServer {
     }
 
     if (path === '/') {
-      if (this.landingGz) {
-        sendPrecompressedHtml(req, res, this.landingGz, getLandingHtml, 300);
-      } else {
-        sendHtml(req, res, getLandingHtml(), 300);
-      }
+      sendHtml(res, getCachedHtml('landing', getLandingHtml), 300);
       return;
     }
 
     if (path === '/login') {
-      if (this.loginGz) {
-        sendPrecompressedHtml(req, res, this.loginGz, getLoginHtml, 300);
-      } else {
-        sendHtml(req, res, getLoginHtml(), 300);
-      }
+      sendHtml(res, getCachedHtml('login', getLoginHtml), 300);
       return;
     }
 
@@ -1006,12 +969,11 @@ export class DashboardServer {
         const u = this.userDb.getUserById(auth.userId);
         if (u) userEmail = u.email;
       }
-      sendHtml(req, res, getCheckoutHtml({
-        stripe: isStripeConfigured(),
-        lemonSqueezy: isLemonSqueezyConfigured(),
-        nowPayments: isNowPaymentsConfigured(),
-        userEmail,
-      }));
+      // Checkout depends on user email, so skip cache when personalised
+      const checkoutHtml = userEmail
+        ? getCheckoutHtml({ stripe: isStripeConfigured(), lemonSqueezy: isLemonSqueezyConfigured(), nowPayments: isNowPaymentsConfigured(), userEmail })
+        : getCachedHtml('checkout', () => getCheckoutHtml({ stripe: isStripeConfigured(), lemonSqueezy: isLemonSqueezyConfigured(), nowPayments: isNowPaymentsConfigured() }));
+      sendHtml(res, checkoutHtml);
       return;
     }
 
@@ -1231,7 +1193,7 @@ export class DashboardServer {
     /* ─── Admin routes ─── */
     if (path === '/admin') {
       if (!user.isAdmin) { res.writeHead(302, { Location: '/dashboard' }); res.end(); return; }
-      sendHtml(req, res, getAdminHtml());
+      sendHtml(res, getCachedHtml('admin', getAdminHtml));
       return;
     }
 
@@ -1473,7 +1435,7 @@ export class DashboardServer {
     /* ─── Dashboard HTML ─── */
     if (path === '/dashboard') {
       this.userDb.trackEvent('page_view', userId, { page: 'dashboard' });
-      sendHtml(req, res, getDashboardHtml());
+      sendHtml(res, getCachedHtml('dashboard', getDashboardHtml));
       return;
     }
 
