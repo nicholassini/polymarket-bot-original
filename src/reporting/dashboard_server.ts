@@ -2195,9 +2195,19 @@ export class DashboardServer {
 
     /* ─── Whale API routes (delegated) ─── */
     if (path.startsWith('/api/whales') && this.whaleApi) {
-      // Whale mutations (add/remove/scanner control) admin-only; reads are public market data
+      // Scanner endpoints require PRO+ plan
+      const isScannerRoute = path.startsWith('/api/whales/scanner');
+      if (isScannerRoute) {
+        const hasPaidSub = !!user.subscriptionId && (user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing');
+        const userPlan = user.isAdmin ? 'enterprise' : (!hasPaidSub ? 'free' : user.planTier || 'pro');
+        if (userPlan === 'free') {
+          json(res, 403, { error: 'Whale Scanner is a PRO feature. Upgrade your plan to access it.' });
+          return;
+        }
+      }
+      // Non-scanner whale mutations (add/remove whales) require admin
       const isMutation = method === 'POST' || method === 'PUT' || method === 'DELETE';
-      if (isMutation && !user.isAdmin) {
+      if (isMutation && !isScannerRoute && !user.isAdmin) {
         json(res, 403, { error: 'Admin access required for whale tracking mutations' });
         return;
       }
@@ -3987,6 +3997,16 @@ let _userData = null;
     if (isFreeUser) {
       const liveOpt = document.getElementById('cw-mode-live');
       if (liveOpt) liveOpt.remove();
+    }
+
+    /* ── Whale Scanner: PRO-only — disable controls for free users ── */
+    if (isFreeUser) {
+      ['wh-top-start','wh-top-stop','wh-top-scan','wh-scan-start','wh-scan-stop','wh-scan-trigger'].forEach(function(id){
+        var el=document.getElementById(id);
+        if(el){el.disabled=true;el.style.opacity='0.4';el.style.cursor='not-allowed';el.title='PRO feature — upgrade to access the Whale Scanner'}
+      });
+      var scannerSt=document.getElementById('wh-top-scanner-st');
+      if(scannerSt) scannerSt.innerHTML='<span style="color:var(--yellow)">🔒 PRO Feature</span>';
     }
 
     /* ── Trial top-bar for free users (shown on all pages above header) ── */
@@ -6073,6 +6093,11 @@ document.getElementById('wh-add-btn').addEventListener('click',async()=>{
 /* ─── Scanner ─── */
 let scannerPollInterval=null;
 async function loadScanner(){
+  if(_userData && _userData.effectivelyFree){
+    document.getElementById('wh-scan-st').innerHTML='<span style="color:var(--yellow)">🔒 PRO Feature</span>';
+    document.getElementById('wh-top-scanner-st').innerHTML='<span style="color:var(--yellow)">🔒 PRO Feature</span>';
+    return;
+  }
   try{
     const r=await fetch('/api/whales/scanner/state');
     if(!r.ok)return;
@@ -6264,15 +6289,26 @@ async function promoteScanned(address){
   }catch(e){console.error(e)}
 }
 
+function isScannerLocked(){
+  if(_userData && _userData.effectivelyFree){
+    alert('Whale Scanner is a PRO feature. Upgrade your plan to access it.');
+    return true;
+  }
+  return false;
+}
+
 document.getElementById('wh-scan-start').addEventListener('click',async()=>{
+  if(isScannerLocked()) return;
   await fetch('/api/whales/scanner/start',{method:'POST'});
   setTimeout(loadScanner,500);
 });
 document.getElementById('wh-scan-stop').addEventListener('click',async()=>{
+  if(isScannerLocked()) return;
   await fetch('/api/whales/scanner/stop',{method:'POST'});
   setTimeout(loadScanner,500);
 });
 document.getElementById('wh-scan-trigger').addEventListener('click',async()=>{
+  if(isScannerLocked()) return;
   document.getElementById('wh-scan-st').innerHTML='<span style="color:var(--blue)">SCANNING…</span>';
   try{
     await fetch('/api/whales/scanner/scan',{method:'POST'});
@@ -6282,16 +6318,19 @@ document.getElementById('wh-scan-trigger').addEventListener('click',async()=>{
 
 /* Top-level scanner controls (always visible at top of Whales tab) */
 document.getElementById('wh-top-start').addEventListener('click',async()=>{
+  if(isScannerLocked()) return;
   document.getElementById('wh-top-scanner-st').innerHTML='<span style="color:var(--blue)">Starting…</span>';
   await fetch('/api/whales/scanner/start',{method:'POST'});
   setTimeout(loadScanner,500);
 });
 document.getElementById('wh-top-stop').addEventListener('click',async()=>{
+  if(isScannerLocked()) return;
   document.getElementById('wh-top-scanner-st').innerHTML='<span style="color:var(--yellow)">Stopping…</span>';
   await fetch('/api/whales/scanner/stop',{method:'POST'});
   setTimeout(loadScanner,500);
 });
 document.getElementById('wh-top-scan').addEventListener('click',async()=>{
+  if(isScannerLocked()) return;
   document.getElementById('wh-top-scanner-st').innerHTML='<span style="color:var(--blue)">SCANNING…</span>';
   try{
     await fetch('/api/whales/scanner/scan',{method:'POST'});

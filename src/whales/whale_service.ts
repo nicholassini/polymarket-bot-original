@@ -69,10 +69,7 @@ export class WhaleService {
     this.candidates.start();
     this.reconciliation.start();
 
-    // Auto-start scanner if configured
-    if (this.config.scanner.enabled) {
-      this.scanner.start();
-    }
+    // Scanner is NOT auto-started — user must click Start in the dashboard (PRO+ only)
 
     // Analytics refresh every 5 minutes
     this.analyticsTimer = setInterval(() => {
