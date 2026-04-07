@@ -700,17 +700,19 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Content-Encoding': 'gzip',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   });
-  zlib.gzip(Buffer.from(payload), (_, compressed) => {
-    res.end(compressed ?? payload);
-  });
+  res.end(payload);
 }
 
-/** Send an HTML response with gzip compression and optional caching */
+/** Check if the client accepts gzip encoding */
+function acceptsGzip(req: http.IncomingMessage): boolean {
+  return (req.headers['accept-encoding'] ?? '').toString().includes('gzip');
+}
+
+/** Send an HTML response, gzip-compressed if client supports it */
 function sendHtml(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -719,18 +721,47 @@ function sendHtml(
 ): void {
   const headers: Record<string, string> = {
     'Content-Type': 'text/html; charset=utf-8',
-    'Content-Encoding': 'gzip',
+  };
+  if (maxAge > 0) {
+    headers['Cache-Control'] = `public, max-age=${maxAge}, stale-while-revalidate=${maxAge * 2}`;
+    headers['Vary'] = 'Accept-Encoding';
+  }
+  if (acceptsGzip(req)) {
+    headers['Content-Encoding'] = 'gzip';
+    res.writeHead(200, headers);
+    res.end(zlib.gzipSync(Buffer.from(html)));
+  } else {
+    res.writeHead(200, headers);
+    res.end(html);
+  }
+}
+
+/** Send pre-compressed static HTML (already gzipped buffer) */
+function sendPrecompressedHtml(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  gzBuf: Buffer,
+  rawHtmlFn: () => string,
+  maxAge: number = 0,
+): void {
+  const headers: Record<string, string> = {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Vary': 'Accept-Encoding',
   };
   if (maxAge > 0) {
     headers['Cache-Control'] = `public, max-age=${maxAge}, stale-while-revalidate=${maxAge * 2}`;
   }
-  res.writeHead(200, headers);
-  zlib.gzip(Buffer.from(html), (_, compressed) => {
-    res.end(compressed ?? html);
-  });
+  if (acceptsGzip(req)) {
+    headers['Content-Encoding'] = 'gzip';
+    res.writeHead(200, headers);
+    res.end(gzBuf);
+  } else {
+    res.writeHead(200, headers);
+    res.end(rawHtmlFn());
+  }
 }
 
-/** Send a plain-text response with gzip compression */
+/** Send a plain-text response with optional caching */
 function sendText(
   res: http.ServerResponse,
   text: string,
@@ -739,13 +770,10 @@ function sendText(
 ): void {
   const headers: Record<string, string> = {
     'Content-Type': contentType,
-    'Content-Encoding': 'gzip',
   };
   if (maxAge > 0) headers['Cache-Control'] = `public, max-age=${maxAge}`;
   res.writeHead(200, headers);
-  zlib.gzip(Buffer.from(text), (_, compressed) => {
-    res.end(compressed ?? text);
-  });
+  res.end(text);
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -955,12 +983,7 @@ export class DashboardServer {
 
     if (path === '/') {
       if (this.landingGz) {
-        res.writeHead(200, {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Content-Encoding': 'gzip',
-          'Cache-Control': 'public, max-age=300, stale-while-revalidate=600',
-        });
-        res.end(this.landingGz);
+        sendPrecompressedHtml(req, res, this.landingGz, getLandingHtml, 300);
       } else {
         sendHtml(req, res, getLandingHtml(), 300);
       }
@@ -969,12 +992,7 @@ export class DashboardServer {
 
     if (path === '/login') {
       if (this.loginGz) {
-        res.writeHead(200, {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Content-Encoding': 'gzip',
-          'Cache-Control': 'public, max-age=300, stale-while-revalidate=600',
-        });
-        res.end(this.loginGz);
+        sendPrecompressedHtml(req, res, this.loginGz, getLoginHtml, 300);
       } else {
         sendHtml(req, res, getLoginHtml(), 300);
       }
