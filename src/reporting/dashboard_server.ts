@@ -1,4 +1,5 @@
 import http from 'http';
+import zlib from 'zlib';
 import { WalletManager } from '../wallets/wallet_manager';
 import { PaperWallet } from '../wallets/paper_wallet';
 import { PolymarketWallet } from '../wallets/polymarket_wallet';
@@ -696,13 +697,55 @@ function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json',
+    'Content-Encoding': 'gzip',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   });
-  res.end(JSON.stringify(body, null, 2));
+  zlib.gzip(Buffer.from(payload), (_, compressed) => {
+    res.end(compressed ?? payload);
+  });
+}
+
+/** Send an HTML response with gzip compression and optional caching */
+function sendHtml(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  html: string,
+  maxAge: number = 0,
+): void {
+  const headers: Record<string, string> = {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Encoding': 'gzip',
+  };
+  if (maxAge > 0) {
+    headers['Cache-Control'] = `public, max-age=${maxAge}, stale-while-revalidate=${maxAge * 2}`;
+  }
+  res.writeHead(200, headers);
+  zlib.gzip(Buffer.from(html), (_, compressed) => {
+    res.end(compressed ?? html);
+  });
+}
+
+/** Send a plain-text response with gzip compression */
+function sendText(
+  res: http.ServerResponse,
+  text: string,
+  contentType: string = 'text/plain; charset=utf-8',
+  maxAge: number = 0,
+): void {
+  const headers: Record<string, string> = {
+    'Content-Type': contentType,
+    'Content-Encoding': 'gzip',
+  };
+  if (maxAge > 0) headers['Cache-Control'] = `public, max-age=${maxAge}`;
+  res.writeHead(200, headers);
+  zlib.gzip(Buffer.from(text), (_, compressed) => {
+    res.end(compressed ?? text);
+  });
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -717,6 +760,10 @@ export class DashboardServer {
   private readonly walletDisplayNames = new Map<string, string>();
   private readonly userDb: UserDB;
 
+  /* Pre-compressed page caches (generated once, served many times) */
+  private landingGz: Buffer | null = null;
+  private loginGz: Buffer | null = null;
+
   constructor(
     private readonly walletManager: WalletManager,
     private readonly port = 3000,
@@ -727,6 +774,10 @@ export class DashboardServer {
     if (restored > 0) {
       console.log(`[DashboardServer] Loaded ${restored} persisted setting(s) from database`);
     }
+
+    // Pre-compress static pages on startup for fast serving
+    zlib.gzip(Buffer.from(getLandingHtml()), (_, buf) => { if (buf) this.landingGz = buf; });
+    zlib.gzip(Buffer.from(getLoginHtml()), (_, buf) => { if (buf) this.loginGz = buf; });
   }
 
   setWhaleApi(api: WhaleAPI): void {
@@ -825,6 +876,9 @@ export class DashboardServer {
       }
     });
 
+    this.server.keepAliveTimeout = 65_000;  // Keep connections alive (avoids TCP handshake per request)
+    this.server.headersTimeout = 66_000;
+
     this.server.listen(this.port, () => {
       logger.info(
         { port: this.port, url: `http://localhost:${this.port}/dashboard` },
@@ -883,15 +937,13 @@ export class DashboardServer {
     /* ─── Public routes (no auth required) ─── */
 
     if (path === '/robots.txt') {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end(`User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /api/\n\nSitemap: https://polytradingbot.xyz/sitemap.xml\n`);
+      sendText(res, `User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /api/\n\nSitemap: https://polytradingbot.xyz/sitemap.xml\n`, 'text/plain; charset=utf-8', 86400);
       return;
     }
 
     if (path === '/sitemap.xml') {
       const now = new Date().toISOString().slice(0, 10);
-      res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
-      res.end(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://polytradingbot.xyz/</loc><lastmod>${now}</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>\n  <url><loc>https://polytradingbot.xyz/login</loc><lastmod>${now}</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>\n  <url><loc>https://polytradingbot.xyz/checkout</loc><lastmod>${now}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>\n</urlset>\n`);
+      sendText(res, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://polytradingbot.xyz/</loc><lastmod>${now}</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>\n  <url><loc>https://polytradingbot.xyz/login</loc><lastmod>${now}</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>\n  <url><loc>https://polytradingbot.xyz/checkout</loc><lastmod>${now}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>\n</urlset>\n`, 'application/xml; charset=utf-8', 3600);
       return;
     }
 
@@ -902,14 +954,30 @@ export class DashboardServer {
     }
 
     if (path === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(getLandingHtml());
+      if (this.landingGz) {
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Encoding': 'gzip',
+          'Cache-Control': 'public, max-age=300, stale-while-revalidate=600',
+        });
+        res.end(this.landingGz);
+      } else {
+        sendHtml(req, res, getLandingHtml(), 300);
+      }
       return;
     }
 
     if (path === '/login') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(getLoginHtml());
+      if (this.loginGz) {
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Encoding': 'gzip',
+          'Cache-Control': 'public, max-age=300, stale-while-revalidate=600',
+        });
+        res.end(this.loginGz);
+      } else {
+        sendHtml(req, res, getLoginHtml(), 300);
+      }
       return;
     }
 
@@ -920,8 +988,7 @@ export class DashboardServer {
         const u = this.userDb.getUserById(auth.userId);
         if (u) userEmail = u.email;
       }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(getCheckoutHtml({
+      sendHtml(req, res, getCheckoutHtml({
         stripe: isStripeConfigured(),
         lemonSqueezy: isLemonSqueezyConfigured(),
         nowPayments: isNowPaymentsConfigured(),
@@ -1146,8 +1213,7 @@ export class DashboardServer {
     /* ─── Admin routes ─── */
     if (path === '/admin') {
       if (!user.isAdmin) { res.writeHead(302, { Location: '/dashboard' }); res.end(); return; }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(getAdminHtml());
+      sendHtml(req, res, getAdminHtml());
       return;
     }
 
@@ -1389,8 +1455,7 @@ export class DashboardServer {
     /* ─── Dashboard HTML ─── */
     if (path === '/dashboard') {
       this.userDb.trackEvent('page_view', userId, { page: 'dashboard' });
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(getDashboardHtml());
+      sendHtml(req, res, getDashboardHtml());
       return;
     }
 
