@@ -103,6 +103,14 @@ export class UserDB {
     // Create indexes if they don't exist
     try { this.db.exec('CREATE INDEX idx_events_type_date ON analytics_events(event_type, created_at)'); } catch {}
     try { this.db.exec('CREATE INDEX idx_events_user ON analytics_events(user_id, created_at)'); } catch {}
+
+    // Migration: persistent settings table (survives redeployment)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
   }
 
   async createUser(email: string, password: string): Promise<User> {
@@ -459,5 +467,53 @@ export class UserDB {
       planTier: row.plan_tier || 'free',
       createdAt: row.created_at,
     };
+  }
+
+  /* ─── Persistent Settings (survives redeployment) ─── */
+
+  saveSetting(key: string, value: string): void {
+    this.db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    ).run(key, value);
+  }
+
+  saveSettings(entries: Record<string, string>): number {
+    const stmt = this.db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    let count = 0;
+    const tx = this.db.transaction(() => {
+      for (const [k, v] of Object.entries(entries)) {
+        stmt.run(k, v);
+        count++;
+      }
+    });
+    tx();
+    return count;
+  }
+
+  getSetting(key: string): string | undefined {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
+    return row?.value;
+  }
+
+  getAllSettings(): Record<string, string> {
+    const rows = this.db.prepare('SELECT key, value FROM settings').all() as any[];
+    const result: Record<string, string> = {};
+    for (const r of rows) result[r.key] = r.value;
+    return result;
+  }
+
+  /** Load all persisted settings into process.env (called at boot) */
+  loadSettingsIntoEnv(): number {
+    const settings = this.getAllSettings();
+    let count = 0;
+    for (const [key, value] of Object.entries(settings)) {
+      if (value && !value.startsWith('••••')) {
+        process.env[key] = value;
+        count++;
+      }
+    }
+    return count;
   }
 }

@@ -722,6 +722,11 @@ export class DashboardServer {
     private readonly port = 3000,
   ) {
     this.userDb = new UserDB();
+    // Restore persisted settings (billing keys, etc.) into process.env on boot
+    const restored = this.userDb.loadSettingsIntoEnv();
+    if (restored > 0) {
+      console.log(`[DashboardServer] Loaded ${restored} persisted setting(s) from database`);
+    }
   }
 
   setWhaleApi(api: WhaleAPI): void {
@@ -1262,11 +1267,6 @@ export class DashboardServer {
 
       if (path === '/api/admin/stripe-config' && method === 'POST') {
         const body = await readBody(req);
-        const fs = require('fs');
-        const path_ = require('path');
-        const envPath = path_.join(process.cwd(), '.env');
-        let envContent = '';
-        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
 
         const updates: Record<string, string> = {};
         if (body.secretKey && typeof body.secretKey === 'string' && !body.secretKey.startsWith('••••')) updates['STRIPE_SECRET_KEY'] = body.secretKey;
@@ -1274,17 +1274,10 @@ export class DashboardServer {
         if (body.priceId && typeof body.priceId === 'string') updates['STRIPE_PRICE_ID'] = body.priceId;
         if (body.signupFeeCents !== undefined) updates['SIGNUP_FEE_CENTS'] = String(Number(body.signupFeeCents) || 0);
 
-        for (const [key, val] of Object.entries(updates)) {
-          const re = new RegExp('^' + key + '=.*$', 'm');
-          if (re.test(envContent)) {
-            envContent = envContent.replace(re, key + '=' + val);
-          } else {
-            envContent += '\n' + key + '=' + val;
-          }
-          process.env[key] = val;
-        }
-        fs.writeFileSync(envPath, envContent);
-        json(res, 200, { ok: true, message: 'Stripe settings saved. Restart server for full effect.' });
+        for (const [key, val] of Object.entries(updates)) process.env[key] = val;
+        if (Object.keys(updates).length > 0) this.userDb.saveSettings(updates);
+
+        json(res, 200, { ok: true, message: 'Stripe settings saved.' });
         return;
       }
 
@@ -1300,11 +1293,6 @@ export class DashboardServer {
 
       if (path === '/api/admin/lemonsqueezy-config' && method === 'POST') {
         const body = await readBody(req);
-        const fs = require('fs');
-        const path_ = require('path');
-        const envPath = path_.join(process.cwd(), '.env');
-        let envContent = '';
-        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
 
         const updates: Record<string, string> = {};
         if (body.apiKey && typeof body.apiKey === 'string' && !body.apiKey.startsWith('••••')) updates['LEMONSQUEEZY_API_KEY'] = body.apiKey;
@@ -1312,44 +1300,25 @@ export class DashboardServer {
         if (body.storeId && typeof body.storeId === 'string') updates['LEMONSQUEEZY_STORE_ID'] = body.storeId;
         if (body.variantId && typeof body.variantId === 'string') updates['LEMONSQUEEZY_VARIANT_ID'] = body.variantId;
 
-        for (const [key, val] of Object.entries(updates)) {
-          const re = new RegExp('^' + key + '=.*$', 'm');
-          if (re.test(envContent)) {
-            envContent = envContent.replace(re, key + '=' + val);
-          } else {
-            envContent += '\n' + key + '=' + val;
-          }
-          process.env[key] = val;
-        }
-        fs.writeFileSync(envPath, envContent);
-        json(res, 200, { ok: true, message: 'Lemon Squeezy settings saved. Restart server for full effect.' });
+        for (const [key, val] of Object.entries(updates)) process.env[key] = val;
+        if (Object.keys(updates).length > 0) this.userDb.saveSettings(updates);
+
+        json(res, 200, { ok: true, message: 'Lemon Squeezy settings saved.' });
         return;
       }
 
       if (path === '/api/admin/nowpayments-config' && method === 'POST') {
         const body = await readBody(req);
-        const fs = require('fs');
-        const path_ = require('path');
-        const envPath = path_.join(process.cwd(), '.env');
-        let envContent = '';
-        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
 
         const updates: Record<string, string> = {};
         if (body.apiKey && typeof body.apiKey === 'string' && !body.apiKey.startsWith('••••')) updates['NOWPAYMENTS_API_KEY'] = body.apiKey;
         if (body.publicKey && typeof body.publicKey === 'string' && !body.publicKey.startsWith('••••')) updates['NOWPAYMENTS_PUBLIC_KEY'] = body.publicKey;
         if (body.priceUsd !== undefined && body.priceUsd !== '') updates['NOWPAYMENTS_PRICE_USD'] = String(Number(body.priceUsd) || 99);
 
-        for (const [key, val] of Object.entries(updates)) {
-          const re = new RegExp('^' + key + '=.*$', 'm');
-          if (re.test(envContent)) {
-            envContent = envContent.replace(re, key + '=' + val);
-          } else {
-            envContent += '\n' + key + '=' + val;
-          }
-          process.env[key] = val;
-        }
-        fs.writeFileSync(envPath, envContent);
-        json(res, 200, { ok: true, message: 'NOWPayments settings saved. Restart server for full effect.' });
+        for (const [key, val] of Object.entries(updates)) process.env[key] = val;
+        if (Object.keys(updates).length > 0) this.userDb.saveSettings(updates);
+
+        json(res, 200, { ok: true, message: 'NOWPayments settings saved.' });
         return;
       }
 
@@ -1365,28 +1334,39 @@ export class DashboardServer {
           'NOWPAYMENTS_API_KEY', 'NOWPAYMENTS_PUBLIC_KEY', 'NOWPAYMENTS_PRICE_USD',
         ]);
 
-        const fs = require('fs');
-        const path_ = require('path');
-        const envPath = path_.join(process.cwd(), '.env');
-        let envContent = '';
-        try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
-
+        const dbEntries: Record<string, string> = {};
         let count = 0;
         for (const [key, val] of Object.entries(settings)) {
           if (!allowedKeys.has(key)) continue;
           const strVal = String(val).trim();
           if (!strVal || strVal.startsWith('••••')) continue;
-          const re = new RegExp('^' + key + '=.*$', 'm');
-          if (re.test(envContent)) {
-            envContent = envContent.replace(re, key + '=' + strVal);
-          } else {
-            envContent += '\n' + key + '=' + strVal;
-          }
           process.env[key] = strVal;
+          dbEntries[key] = strVal;
           count++;
         }
-        if (count > 0) fs.writeFileSync(envPath, envContent);
-        json(res, 200, { ok: true, message: count + ' setting(s) saved. Some changes may require a restart.' });
+
+        // Persist to SQLite (survives redeployment on persistent volume)
+        if (count > 0) this.userDb.saveSettings(dbEntries);
+
+        // Also write to .env as backup (may not survive redeploy)
+        try {
+          const fs = require('fs');
+          const path_ = require('path');
+          const envPath = path_.join(process.cwd(), '.env');
+          let envContent = '';
+          try { envContent = fs.readFileSync(envPath, 'utf-8'); } catch {}
+          for (const [key, strVal] of Object.entries(dbEntries)) {
+            const re = new RegExp('^' + key + '=.*$', 'm');
+            if (re.test(envContent)) {
+              envContent = envContent.replace(re, key + '=' + strVal);
+            } else {
+              envContent += '\n' + key + '=' + strVal;
+            }
+          }
+          fs.writeFileSync(envPath, envContent);
+        } catch { /* .env write is best-effort; DB is the source of truth */ }
+
+        json(res, 200, { ok: true, message: count + ' setting(s) saved.' });
         return;
       }
 
