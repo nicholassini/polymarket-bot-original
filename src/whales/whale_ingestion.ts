@@ -50,6 +50,7 @@ export class WhaleIngestion {
   private maxConsecutiveErrors = 10;
   private marketMetadataCache: Map<string, { question: string; slug: string; outcomes: string[] }> = new Map();
   private metadataCacheLoadedAt = 0;
+  private pollInProgress = false;
 
   constructor(db: WhaleDB, config: WhaleTrackingConfig, clobApi: string, gammaApi: string) {
     this.db = db;
@@ -81,6 +82,8 @@ export class WhaleIngestion {
 
   private async pollCycle(): Promise<void> {
     if (!this.running) return;
+    if (this.pollInProgress) return; // prevent overlapping cycles
+    this.pollInProgress = true;
     try {
       const { whales } = this.db.listWhales({ trackingEnabled: true, limit: 1000 });
       if (whales.length === 0) { return; }
@@ -104,6 +107,8 @@ export class WhaleIngestion {
         await this.sleep(60_000);
         this.consecutiveErrors = Math.floor(this.consecutiveErrors / 2);
       }
+    } finally {
+      this.pollInProgress = false;
     }
   }
 

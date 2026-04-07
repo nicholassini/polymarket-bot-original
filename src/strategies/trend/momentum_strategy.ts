@@ -434,4 +434,11 @@ export class MomentumStrategy extends BaseStrategy {
     const lateAvg = volumes.slice(half).reduce((a, b) => a + b, 0) / (volumes.length - half);
     return lateAvg >= earlyAvg * 0.8; // recent volume at least 80% of earlier
   }
+
+  override shutdown(): void {
+    super.shutdown();
+    this.priceHistory.clear();
+    this.managedPositions.clear();
+    this.signalCooldown.clear();
+  }
 }

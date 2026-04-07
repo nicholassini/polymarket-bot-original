@@ -232,7 +232,7 @@ export class Engine {
 
     for (const runner of this.runners) {
       if (this.pausedWallets.has(runner.walletId)) continue;  // skip paused
-      runner.strategy.onTimer();
+      await runner.strategy.onTimer();
       await this.processSignals(runner);
       // Yield to the event loop between runners so HTTP requests aren't starved
       await new Promise<void>((r) => setImmediate(r));

@@ -28,6 +28,7 @@ export class WhaleReconciliation {
   private config: WhaleTrackingConfig;
   private ingestion: WhaleIngestion;
   private running = false;
+  private reconcileInProgress = false;
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(db: WhaleDB, config: WhaleTrackingConfig, ingestion: WhaleIngestion) {
@@ -56,6 +57,9 @@ export class WhaleReconciliation {
   /* ━━━━━━━━━━━━━━ Full reconcile cycle ━━━━━━━━━━━━━━ */
 
   async reconcileCycle(): Promise<ReconciliationReport[]> {
+    if (this.reconcileInProgress) return [];
+    this.reconcileInProgress = true;
+    try {
     const { whales } = this.db.listWhales({ trackingEnabled: true, limit: 1000 });
     const reports: ReconciliationReport[] = [];
 
@@ -73,6 +77,9 @@ export class WhaleReconciliation {
     }
 
     return reports;
+    } finally {
+      this.reconcileInProgress = false;
+    }
   }
 
   /* ━━━━━━━━━━━━━━ Per-whale reconciliation ━━━━━━━━━━━━━━ */

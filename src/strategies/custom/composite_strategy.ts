@@ -504,6 +504,7 @@ export class CompositeStrategy extends BaseStrategy {
   }
 
   override shutdown(): void {
+    super.shutdown();
     this.priceHistory.clear();
     this.volumeHistory.clear();
     this.positions.length = 0;

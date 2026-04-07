@@ -11,9 +11,6 @@ export class RiskEngine {
   /** Cancel counts per wallet (rolling window) */
   private cancelCounts = new Map<string, number[]>();
 
-  /** Total MLE (max loss at resolution) per wallet */
-  private walletMle = new Map<string, number>();
-
   constructor(killSwitch: KillSwitch) {
     this.killSwitch = killSwitch;
   }
@@ -107,6 +104,5 @@ export class RiskEngine {
   removeWallet(walletId: string): void {
     this.orderTimestamps.delete(walletId);
     this.cancelCounts.delete(walletId);
-    this.walletMle.delete(walletId);
   }
 }

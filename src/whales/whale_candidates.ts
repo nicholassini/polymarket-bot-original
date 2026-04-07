@@ -25,6 +25,7 @@ export class WhaleCandidates {
   private config: WhaleTrackingConfig;
   private clobApi: string;
   private running = false;
+  private scanInProgress = false;
   private scanTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(db: WhaleDB, config: WhaleTrackingConfig, clobApi: string) {
@@ -56,6 +57,8 @@ export class WhaleCandidates {
 
   private async scanCycle(): Promise<void> {
     if (!this.running) return;
+    if (this.scanInProgress) return;
+    this.scanInProgress = true;
     try {
       // Fetch recent trades from CLOB (high-volume markets)
       const trades = await this.fetchRecentTrades();
@@ -109,6 +112,8 @@ export class WhaleCandidates {
       }
     } catch (err) {
       logger.error({ err }, 'Whale candidate scan error');
+    } finally {
+      this.scanInProgress = false;
     }
   }
 
@@ -118,13 +123,19 @@ export class WhaleCandidates {
     /* Primary: CLOB API */
     try {
       const url = `${this.clobApi}/trades?limit=500`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json() as ClobTradeScan[] | { trades?: ClobTradeScan[] };
-        return Array.isArray(data) ? data : (data.trades ?? []);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (res.ok) {
+          const data = await res.json() as ClobTradeScan[] | { trades?: ClobTradeScan[] };
+          return Array.isArray(data) ? data : (data.trades ?? []);
+        }
+        /* CLOB auth failed (401) or other error — fall through to data-api */
+        logger.debug({ status: res.status }, 'CLOB trades unavailable, falling back to data-api');
+      } finally {
+        clearTimeout(timer);
       }
-      /* CLOB auth failed (401) or other error — fall through to data-api */
-      logger.debug({ status: res.status }, 'CLOB trades unavailable, falling back to data-api');
     } catch {
       logger.debug('CLOB trades fetch error, falling back to data-api');
     }
@@ -143,9 +154,17 @@ export class WhaleCandidates {
 
     try {
       /* Fetch top liquid markets from Gamma */
-      const marketsRes = await fetch(
-        `${gammaApi}/markets?active=true&closed=false&limit=10&order=volume24hr&ascending=false`,
-      );
+      const mc = new AbortController();
+      const mt = setTimeout(() => mc.abort(), 10_000);
+      let marketsRes: Response;
+      try {
+        marketsRes = await fetch(
+          `${gammaApi}/markets?active=true&closed=false&limit=10&order=volume24hr&ascending=false`,
+          { signal: mc.signal },
+        );
+      } finally {
+        clearTimeout(mt);
+      }
       if (!marketsRes.ok) return [];
 
       interface GammaMarketSlim {
@@ -159,7 +178,14 @@ export class WhaleCandidates {
       for (const m of markets.slice(0, 5)) {
         if (!m.conditionId) continue;
         try {
-          const tradesRes = await fetch(`${dataApi}/trades?market=${m.conditionId}&limit=200`);
+          const tc = new AbortController();
+          const tt = setTimeout(() => tc.abort(), 10_000);
+          let tradesRes: Response;
+          try {
+            tradesRes = await fetch(`${dataApi}/trades?market=${m.conditionId}&limit=200`, { signal: tc.signal });
+          } finally {
+            clearTimeout(tt);
+          }
           if (!tradesRes.ok) continue;
 
           interface DataApiTrade {

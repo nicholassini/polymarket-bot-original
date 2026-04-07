@@ -382,4 +382,11 @@ export class UserDefinedStrategy extends BaseStrategy {
     }
     return rising >= (recent.length - 1) * 0.5;
   }
+
+  override shutdown(): void {
+    super.shutdown();
+    this.priceHistory.clear();
+    this.volumeHistory.clear();
+    this.positions.length = 0;
+  }
 }

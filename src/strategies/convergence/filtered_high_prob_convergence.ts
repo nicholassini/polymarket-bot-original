@@ -881,4 +881,12 @@ export class FilteredHighProbConvergenceStrategy extends BaseStrategy {
   getDrawdownStats(): { dailyPnl: number; weeklyPnl: number } {
     return { dailyPnl: this.dailyPnl, weeklyPnl: this.weeklyPnl };
   }
+
+  override shutdown(): void {
+    super.shutdown();
+    this.priceCache.clear();
+    this.volumeCache.clear();
+    this.clusterExposure.clear();
+    this.managedPositions.length = 0;
+  }
 }

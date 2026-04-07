@@ -869,6 +869,13 @@ export class CopyTradeStrategy extends BaseStrategy {
   }
 
   override shutdown(): void {
+    super.shutdown();
+    this.seenTradeIds.clear();
+    this.positions.clear();
+    this.whalePerf.clear();
+    this.recentWhaleMap.clear();
+    this.pendingSignals.length = 0;
+    this.pendingWhaleTrades.length = 0;
     logger.info({ strategy: this.name, totalCopied: this.getTotalTradesCopied() }, 'Copy Trade strategy shutdown');
   }
 }
