@@ -828,7 +828,7 @@ export class WhaleScanner {
             marketsProcessedThisBatch % PROFILE_REBUILD_INTERVAL < newMarkets.length) {
           this.rebuildProfiles();
           const elapsed = (Date.now() - batchStart) / 1000;
-          logger.info({
+          logger.debug({
             batch: this.state.batchNumber,
             marketsProcessed: marketsProcessedThisBatch,
             totalDiscovered: totalQualifying,

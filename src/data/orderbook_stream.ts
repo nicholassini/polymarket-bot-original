@@ -84,7 +84,7 @@ export class OrderbookStream extends EventEmitter {
       this.persistSeenCache();
       this.pollCount++;
       const newMarkets = this.cache.size - prevSize;
-      consoleLog.info(
+      consoleLog.debug(
         'SCAN',
         `Poll #${this.pollCount} complete — ${markets.length} markets fetched, ${this.cache.size} cached${newMarkets > 0 ? `, ${newMarkets} new cached` : ''}${newlyDiscovered > 0 ? `, ${newlyDiscovered} newly discovered` : ''}`,
         {

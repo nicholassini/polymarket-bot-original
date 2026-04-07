@@ -94,7 +94,7 @@ export class WhaleIngestion {
       }
       this.consecutiveErrors = 0;
       if (newTradesTotal > 0) {
-        logger.info({ newTradesTotal, whaleCount: whales.length }, 'Ingestion poll complete');
+        logger.debug({ newTradesTotal, whaleCount: whales.length }, 'Ingestion poll complete');
       }
     } catch (err) {
       this.consecutiveErrors++;

@@ -52,6 +52,7 @@ export interface ConsoleEntry {
 }
 
 const MAX_ENTRIES = 2000;
+const MAX_LOGS_PER_SEC = 50; // Rate-limit to avoid Railway's 500/s ceiling
 
 /** Categories that contain no user-specific data and can be seen by anyone */
 const GLOBAL_CATEGORIES = new Set<LogCategory>(['SCAN', 'ENGINE', 'SYSTEM']);
@@ -66,6 +67,11 @@ class ConsoleLogSingleton extends EventEmitter {
   private seq = 0;
   private readonly sseClients = new Map<http.ServerResponse, SSEClientInfo>();
 
+  /* ── Rate-limiting state ── */
+  private rateWindowStart = 0;
+  private rateCount = 0;
+  private rateDropped = 0;
+
   /* ── Public API ─────────────────────────────────────────────── */
 
   log(
@@ -74,9 +80,41 @@ class ConsoleLogSingleton extends EventEmitter {
     message: string,
     data?: Record<string, unknown>,
   ): void {
+    // Rate-limit: allow max N logs per 1-second window (always allow WARN/ERROR)
+    const now = Date.now();
+    if (now - this.rateWindowStart >= 1000) {
+      if (this.rateDropped > 0) {
+        // Emit a single summary for dropped entries at window reset
+        const dropped = this.rateDropped;
+        this.rateDropped = 0;
+        this.rateWindowStart = now;
+        this.rateCount = 1;
+        const dropEntry: ConsoleEntry = {
+          id: ++this.seq,
+          timestamp: now,
+          level: 'WARN',
+          category: 'SYSTEM',
+          message: `Rate-limited: ${dropped} log entries suppressed in last second`,
+        };
+        this.buffer.push(dropEntry);
+        if (this.buffer.length > MAX_ENTRIES) this.buffer.shift();
+        this.broadcast(dropEntry);
+      } else {
+        this.rateWindowStart = now;
+        this.rateCount = 0;
+      }
+    }
+    if (level !== 'WARN' && level !== 'ERROR') {
+      this.rateCount++;
+      if (this.rateCount > MAX_LOGS_PER_SEC) {
+        this.rateDropped++;
+        return; // silently drop
+      }
+    }
+
     const entry: ConsoleEntry = {
       id: ++this.seq,
-      timestamp: Date.now(),
+      timestamp: now,
       level,
       category,
       message,
