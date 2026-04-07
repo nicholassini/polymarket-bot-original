@@ -764,6 +764,7 @@ export class DashboardServer {
   private engine?: Engine;
   private sseClients = new Map<http.ServerResponse, string>(); // response → userId
   private sseInterval?: ReturnType<typeof setInterval>;
+  private ssePayloadCache = new Map<string, { json: string; ts: number }>(); // userId → cached JSON
   private readonly walletDisplayNames = new Map<string, string>();
   private readonly userDb: UserDB;
 
@@ -858,10 +859,13 @@ export class DashboardServer {
     if (this.server) return;
 
     this.server = http.createServer(async (req, res) => {
+      const reqStart = Date.now();
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const method = req.method ?? 'GET';
+      const path = url.pathname;
 
       /* preflight */
-      if (req.method === 'OPTIONS') {
+      if (method === 'OPTIONS') {
         json(res, 204, '');
         return;
       }
@@ -872,6 +876,12 @@ export class DashboardServer {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error({ err: msg }, 'Dashboard request error');
         json(res, 500, { ok: false, error: 'Internal server error' });
+      }
+
+      // Log slow requests (>2s) always, others every 60s
+      const elapsed = Date.now() - reqStart;
+      if (elapsed > 2000) {
+        logger.warn({ method, path, elapsed }, `SLOW REQUEST: ${method} ${path} took ${elapsed}ms`);
       }
     });
 
@@ -911,6 +921,8 @@ export class DashboardServer {
             const payload = buildDashboardPayload(userWallets, userTrades, prices, paused, this.walletDisplayNames);
             jsonStr = JSON.stringify(payload);
             jsonCache.set(userId, jsonStr);
+            // Populate /api/data cache so it can reuse instead of rebuilding
+            this.ssePayloadCache.set(userId, { json: jsonStr, ts: Date.now() });
           }
           client.write(`event: dashboard\ndata: ${jsonStr}\n\n`);
         } catch {
@@ -1451,13 +1463,30 @@ export class DashboardServer {
 
     /* ─── JSON: overview data (used by Dashboard tab) ─── */
     if (path === '/api/data' && method === 'GET') {
-      json(res, 200, buildDashboardPayload(
+      // Reuse SSE-cached payload if available (avoids redundant buildDashboardPayload)
+      const cached = this.ssePayloadCache.get(userId);
+      if (cached && Date.now() - cached.ts < 5_000) {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(cached.json);
+        return;
+      }
+      const payload = buildDashboardPayload(
         getUserWallets(),
         getUserTradeHistories(),
         this.getLiveMarketPrices(),
         this.engine?.getPausedWallets(),
         this.walletDisplayNames,
-      ));
+      );
+      const jsonStr = JSON.stringify(payload);
+      this.ssePayloadCache.set(userId, { json: jsonStr, ts: Date.now() });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(jsonStr);
       return;
     }
 

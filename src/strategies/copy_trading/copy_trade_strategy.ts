@@ -516,7 +516,14 @@ export class CopyTradeStrategy extends BaseStrategy {
   private async fetchWhaleTrades(address: string): Promise<NormalisedWhaleTrade[]> {
     try {
       const url = `${this.cfg.data_api_url}/trades?maker_address=${encodeURIComponent(address)}&limit=50`;
-      const res = await fetch(url);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8_000); // 8s timeout
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       if (!res.ok) {
         logger.debug({ address, status: res.status }, '[copy_trade] API request failed');
         return [];

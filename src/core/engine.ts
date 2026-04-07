@@ -213,6 +213,7 @@ export class Engine {
 
   private async tick(): Promise<void> {
     this.tickCount++;
+    const tickStart = Date.now();
 
     // Log a periodic scan summary every 12 ticks (~60 s at 5 s interval)
     if (this.tickCount % 12 === 0) {
@@ -224,6 +225,13 @@ export class Engine {
       if (this.pausedWallets.has(runner.walletId)) continue;  // skip paused
       runner.strategy.onTimer();
       await this.processSignals(runner);
+      // Yield to the event loop between runners so HTTP requests aren't starved
+      await new Promise<void>((r) => setImmediate(r));
+    }
+
+    const tickMs = Date.now() - tickStart;
+    if (tickMs > 2000 || this.tickCount % 12 === 0) {
+      consoleLog.info('ENGINE', `Tick #${this.tickCount} completed in ${tickMs}ms (${this.runners.length} runners)`);
     }
   }
 
