@@ -539,7 +539,7 @@ footer{padding:40px 24px;text-align:center;border-top:1px solid var(--border)}
         <li><span class="checkmark">\u2713</span> <strong>Live trading with real funds</strong></li>
         <li><span class="checkmark">\u2713</span> <strong>Priority support</strong></li>
       </ul>
-      <a href="/checkout?plan=enterprise" class="price-btn price-btn-primary" style="background:var(--purple)">Go Unlimited \u2192</a>
+      <a href="/checkout?plan=enterprise" class="price-btn price-btn-primary" style="background:#7c3aed">Go Unlimited \u2192</a>
       <div class="price-guarantee"><span class="shield">\ud83d\udee1\ufe0f</span> 30-day money-back guarantee</div>
     </div>
   </div>
