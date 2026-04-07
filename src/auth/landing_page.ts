@@ -36,7 +36,7 @@ export function getLandingHtml(): string {
   "description": "Automate your Polymarket trading with 8+ proven strategies. 24/7 bot execution, paper trading, and real-money support.",
   "offers": [
     { "@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD" },
-    { "@type": "Offer", "name": "Pro", "price": "99", "priceCurrency": "USD", "billingIncrement": "P1M" },
+    { "@type": "Offer", "name": "Pro", "price": "69", "priceCurrency": "USD", "billingIncrement": "P1M" },
     { "@type": "Offer", "name": "Enterprise", "price": "199", "priceCurrency": "USD", "billingIncrement": "P1M" }
   ]
 }
@@ -192,6 +192,15 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--whi
 .t-meta .t-role{font-size:12px;color:var(--muted)}
 @media(max-width:768px){.t-grid{grid-template-columns:1fr}}
 
+/* ═══ FLASH SALE BANNER ═══ */
+.flash-banner{background:linear-gradient(135deg,#dc2626 0%,#ea580c 50%,#dc2626 100%);background-size:200% 200%;animation:flashGrad 3s ease infinite;color:#fff;text-align:center;padding:14px 24px;font-size:15px;font-weight:700;letter-spacing:.3px;position:relative;overflow:hidden}
+.flash-banner::before{content:'';position:absolute;top:0;left:-100%;width:50%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.15),transparent);animation:flashShine 2.5s ease-in-out infinite}
+@keyframes flashGrad{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+@keyframes flashShine{0%{left:-100%}100%{left:200%}}
+.flash-banner .flash-old{text-decoration:line-through;opacity:.75;margin:0 4px}
+.flash-banner .flash-pct{background:rgba(0,0,0,.25);padding:3px 10px;border-radius:6px;font-weight:900;margin:0 6px}
+.sale-badge{position:absolute;top:-14px;right:-8px;background:linear-gradient(135deg,#dc2626,#ea580c);color:#fff;font-size:11px;font-weight:900;padding:6px 14px;border-radius:8px;transform:rotate(4deg);box-shadow:0 2px 12px rgba(220,38,38,.4);z-index:2;letter-spacing:.5px}
+.price-original{text-decoration:line-through;color:var(--muted);font-size:24px;font-weight:600;margin-bottom:-4px}
 /* ═══ PRICING ═══ */
 .pricing{padding:80px 24px;text-align:center}
 .pricing-head{margin-bottom:56px}
@@ -260,6 +269,11 @@ footer{padding:40px 24px;text-align:center;border-top:1px solid var(--border)}
 </style>
 </head>
 <body>
+
+<!-- FLASH SALE BANNER -->
+<div class="flash-banner">
+  \u26A1 FLASH SALE \u2014 Pro Plan: <span class="flash-old">$99/mo</span> \u2192 <strong>$69/mo</strong> <span class="flash-pct">30% OFF</span> \u2014 Limited Time Only!
+</div>
 
 <!-- NAV -->
 <header>
@@ -508,11 +522,13 @@ footer{padding:40px 24px;text-align:center;border-top:1px solid var(--border)}
     </div>
     <!-- PRO -->
     <div class="price-card featured">
-      <div class="price-popular">MOST POPULAR</div>
+      <div class="sale-badge">\uD83D\uDD25 30% OFF</div>
+      <div class="price-popular">FLASH SALE</div>
       <div class="price-name">Pro Trader</div>
       <div class="price-desc">Full access \u2014 trade with real money</div>
-      <div class="price-amount"><sup>$</sup>99<span class="cents"></span></div>
-      <div class="price-period">per month \u2022 cancel anytime</div>
+      <div class="price-original">$99</div>
+      <div class="price-amount"><sup>$</sup>69<span class="cents"></span></div>
+      <div class="price-period">per month \u2022 cancel anytime \u2022 <strong style=\"color:var(--red)\">save $30/mo</strong></div>
       <ul class="price-list">
         <li><span class="checkmark">\u2713</span> All 8 trading strategies</li>
         <li><span class="checkmark">\u2713</span> Up to <strong>10 bots</strong></li>

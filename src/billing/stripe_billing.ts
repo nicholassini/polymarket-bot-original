@@ -84,6 +84,8 @@ export async function createCheckoutSession(
     subscription_data: {
       metadata: { userId },
     },
+    // Flash sale: 30% off Pro plan
+    ...(process.env.STRIPE_COUPON_ID ? { discounts: [{ coupon: process.env.STRIPE_COUPON_ID }] } : {}),
   });
 
   return session.url ?? '';

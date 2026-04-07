@@ -1269,7 +1269,7 @@ export class DashboardServer {
           { key: 'LEMONSQUEEZY_WEBHOOK_SECRET', display: process.env.LEMONSQUEEZY_WEBHOOK_SECRET ? '••••' + process.env.LEMONSQUEEZY_WEBHOOK_SECRET.slice(-4) : '', set: !!process.env.LEMONSQUEEZY_WEBHOOK_SECRET },
           { key: 'NOWPAYMENTS_API_KEY', display: process.env.NOWPAYMENTS_API_KEY ? '••••' + process.env.NOWPAYMENTS_API_KEY.slice(-4) : '', set: !!process.env.NOWPAYMENTS_API_KEY },
           { key: 'NOWPAYMENTS_PUBLIC_KEY', display: process.env.NOWPAYMENTS_PUBLIC_KEY ? '••••' + process.env.NOWPAYMENTS_PUBLIC_KEY.slice(-4) : '', set: !!process.env.NOWPAYMENTS_PUBLIC_KEY },
-          { key: 'NOWPAYMENTS_PRICE_USD', display: process.env.NOWPAYMENTS_PRICE_USD || '99', set: !!process.env.NOWPAYMENTS_PRICE_USD },
+          { key: 'NOWPAYMENTS_PRICE_USD', display: process.env.NOWPAYMENTS_PRICE_USD || '69', set: !!process.env.NOWPAYMENTS_PRICE_USD },
         ];
 
         json(res, 200, {
@@ -1297,7 +1297,7 @@ export class DashboardServer {
           nowPayments: {
             apiKey: process.env.NOWPAYMENTS_API_KEY ? '••••' + process.env.NOWPAYMENTS_API_KEY.slice(-4) : '',
             publicKey: process.env.NOWPAYMENTS_PUBLIC_KEY ? '••••' + process.env.NOWPAYMENTS_PUBLIC_KEY.slice(-4) : '',
-            priceUsd: Number(process.env.NOWPAYMENTS_PRICE_USD || '99'),
+            priceUsd: Number(process.env.NOWPAYMENTS_PRICE_USD || '69'),
           },
           env: envVars,
           users: users.map(u => ({
@@ -1404,7 +1404,7 @@ export class DashboardServer {
         const updates: Record<string, string> = {};
         if (body.apiKey && typeof body.apiKey === 'string' && !body.apiKey.startsWith('••••')) updates['NOWPAYMENTS_API_KEY'] = body.apiKey;
         if (body.publicKey && typeof body.publicKey === 'string' && !body.publicKey.startsWith('••••')) updates['NOWPAYMENTS_PUBLIC_KEY'] = body.publicKey;
-        if (body.priceUsd !== undefined && body.priceUsd !== '') updates['NOWPAYMENTS_PRICE_USD'] = String(Number(body.priceUsd) || 99);
+        if (body.priceUsd !== undefined && body.priceUsd !== '') updates['NOWPAYMENTS_PRICE_USD'] = String(Number(body.priceUsd) || 69);
 
         for (const [key, val] of Object.entries(updates)) process.env[key] = val;
         if (Object.keys(updates).length > 0) this.userDb.saveSettings(updates);
@@ -2945,7 +2945,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
   <span class="trial-label">⏱ Free Trial:</span>
   <span class="trial-time" id="trial-countdown">--:--:--</span>
   <span class="trial-label">remaining</span>
-  <button class="trial-upgrade-btn" onclick="window.location.href='/checkout?plan=pro'">Upgrade — from $99/mo</button>
+  <button class="trial-upgrade-btn" onclick="window.location.href='/checkout?plan=pro'">Upgrade — <s>$99</s> $69/mo (30% OFF)</button>
 </div>
 <div class="trial-topbar-spacer" id="trial-spacer"></div>
 
@@ -3068,7 +3068,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
   <div class="upsell-banner" id="upsell-strategies">
     <div class="upsell-icon">\u26A1</div>
     <div class="upsell-text"><h4>Unlock Live Strategy Execution</h4><p>Paper trading is great for testing. Go Pro to deploy strategies with real capital and maximize returns.</p></div>
-    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Go Pro \u2014 from $99/mo</button>
+    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Go Pro — <s>$99</s> $69/mo \uD83D\uDD25</button>
   </div>
   <div class="section-title" id="strat-list-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
     <span><span class="icon">\uD83E\uDDE0</span> Strategy Library</span>
@@ -3333,7 +3333,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
   <div class="upsell-banner" id="upsell-markets">
     <div class="upsell-icon">\uD83C\uDF0D</div>
     <div class="upsell-text"><h4>Trade These Markets Live</h4><p>See an opportunity? Pro users can place real trades directly from the dashboard.</p></div>
-    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Start Trading Live \u2014 from $99/mo</button>
+    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Start Trading Live — <s>$99</s> $69/mo \uD83D\uDD25</button>
   </div>
   <div class="section-title"><span class="icon">\uD83C\uDF0D</span> Live Polymarket Markets</div>
   <p style="color:var(--muted);margin-bottom:16px">Real-time data from the Polymarket Gamma API. Top active markets sorted by 24h volume.</p>
@@ -3385,7 +3385,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
   <div class="upsell-banner" id="upsell-analytics">
     <div class="upsell-icon">\uD83D\uDCCA</div>
     <div class="upsell-text"><h4>Supercharge Your Analytics</h4><p>Pro users get advanced analytics, detailed trade history exports, and real P&amp;L tracking on live trades.</p></div>
-    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Unlock Pro Analytics \u2014 from $99/mo</button>
+    <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Unlock Pro Analytics — <s>$99</s> $69/mo \uD83D\uDD25</button>
   </div>
   <div class="section-title"><span class="icon">\uD83D\uDCCA</span> Trading Analytics</div>
 

@@ -47,10 +47,10 @@ export async function createNPInvoice(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        price_amount: Number(process.env.NOWPAYMENTS_PRICE_USD || '99'),
+        price_amount: Number(process.env.NOWPAYMENTS_PRICE_USD || '69'),
         price_currency: 'usd',
         order_id: userId,
-        order_description: 'Polymarket Bot Pro \u2014 1 Month',
+        order_description: 'Polymarket Bot Pro \u2014 1 Month (Flash Sale 30% OFF)',
         ipn_callback_url: `${successUrl.split('/dashboard')[0]}/api/billing/nowpayments/webhook`,
         success_url: successUrl,
         cancel_url: cancelUrl,

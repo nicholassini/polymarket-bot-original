@@ -16,7 +16,7 @@ export function getCheckoutHtml(providers?: { stripe?: boolean; lemonSqueezy?: b
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Checkout — Polymarket Bot</title>
-<meta name="description" content="Choose your PolyMarket Bot plan — Free, Pro ($99/mo), or Enterprise ($199/mo). Automate prediction market trading with 8+ strategies.">
+<meta name="description" content="Choose your PolyMarket Bot plan — Free, Pro ($69/mo FLASH SALE), or Enterprise ($199/mo). Automate prediction market trading with 8+ strategies.">
 <link rel="canonical" href="https://polytradingbot.xyz/checkout">
 
 <!-- Open Graph -->
@@ -117,6 +117,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .plan-toggle-btn .plan-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
 .badge-popular{background:rgba(79,143,247,.15);color:var(--accent)}
 .badge-power{background:rgba(168,85,247,.15);color:var(--purple)}
+.sale-tag{background:linear-gradient(135deg,#dc2626,#ea580c);color:#fff;font-size:10px;font-weight:900;padding:3px 8px;border-radius:5px;margin-left:6px;letter-spacing:.3px}
+.sale-original{text-decoration:line-through;opacity:.5;font-size:16px;font-weight:500;margin-right:2px}
+.flash-bar{background:linear-gradient(135deg,#dc2626 0%,#ea580c 50%,#dc2626 100%);background-size:200% 200%;animation:flashG 3s ease infinite;color:#fff;text-align:center;padding:12px 24px;font-size:14px;font-weight:700;letter-spacing:.3px}
+@keyframes flashG{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
 
 footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-top:1px solid var(--border)}
 </style>
@@ -139,9 +143,9 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
       <h2>Choose Your Plan</h2>
       <div class="plan-toggle">
         <div class="plan-toggle-btn active" data-plan="pro" onclick="selectPlan('pro')">
-          <div class="plan-badge badge-popular">Most Popular</div>
+          <div class="plan-badge badge-popular">\uD83D\uDD25 FLASH SALE</div>
           <div class="plan-name">Pro Trader</div>
-          <div class="plan-price-tag" style="color:var(--accent)">$99<span style="font-size:13px;font-weight:400;color:var(--muted)">/mo</span></div>
+          <div class="plan-price-tag" style="color:var(--accent)"><span class="sale-original">$99</span>$69<span style="font-size:13px;font-weight:400;color:var(--muted)">/mo</span> <span class="sale-tag">30% OFF</span></div>
           <div class="plan-detail">Up to 10 bots</div>
         </div>
         <div class="plan-toggle-btn" data-plan="enterprise" onclick="selectPlan('enterprise')">
@@ -156,7 +160,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
           <h3 id="summaryPlanName">Pro Trader Plan</h3>
           <p>Monthly subscription</p>
         </div>
-        <div class="plan-price" id="summaryPlanPrice">$99</div>
+        <div class="plan-price" id="summaryPlanPrice">$69</div>
       </div>
       <ul class="summary-features" id="summaryFeatures">
         <li>All 8 trading strategies</li>
@@ -172,7 +176,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
           <div class="label">Total due today</div>
           <div class="period">Billed monthly, cancel anytime</div>
         </div>
-        <div class="amount" id="summaryTotal">$99</div>
+        <div class="amount" id="summaryTotal">$69</div>
       </div>
       <div class="guarantee"><strong>30-day money-back guarantee.</strong> Not satisfied? Get a full refund, no questions asked.</div>
     </div>
@@ -227,7 +231,7 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:12px;border-t
           After creating your account you'll be redirected to complete your payment securely.
         </p>
 
-        <button type="submit" class="submit-btn" id="submitBtn">${loggedIn ? 'Upgrade' : 'Continue to Payment'} — $99/mo</button>
+        <button type="submit" class="submit-btn" id="submitBtn">${loggedIn ? 'Upgrade' : 'Continue to Payment'} \u2014 $69/mo</button>
         <div class="secure-note">
           <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
           All payments processed securely via encrypted checkout
@@ -249,8 +253,8 @@ const errorMsg = document.getElementById('errorMsg');
 const submitBtn = document.getElementById('submitBtn');
 
 const plans = {
-  pro:        { name: 'Pro Trader Plan', price: 99, bots: 'Up to 10 bots', color: 'var(--accent)' },
-  enterprise: { name: 'Enterprise Plan',  price: 199, bots: 'Unlimited bots', color: 'var(--purple)' },
+  pro:        { name: 'Pro Trader Plan', price: 69, originalPrice: 99, bots: 'Up to 10 bots', color: 'var(--accent)' },
+  enterprise: { name: 'Enterprise Plan',  price: 199, originalPrice: null, bots: 'Unlimited bots', color: 'var(--purple)' },
 };
 let selectedPlan = new URLSearchParams(location.search).get('plan') === 'enterprise' ? 'enterprise' : 'pro';
 
