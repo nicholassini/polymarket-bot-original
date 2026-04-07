@@ -7,6 +7,7 @@ import { MomentumStrategy } from './trend/momentum_strategy';
 import { UserDefinedStrategy } from './custom/user_defined_strategy';
 import { FilteredHighProbConvergenceStrategy } from './convergence/filtered_high_prob_convergence';
 import { CopyTradeStrategy } from './copy_trading/copy_trade_strategy';
+import { CompositeStrategy } from './custom/composite_strategy';
 
 export const STRATEGY_REGISTRY: Record<string, new () => StrategyInterface> = {
   cross_market_arbitrage: CrossMarketArbitrageStrategy,
@@ -17,6 +18,7 @@ export const STRATEGY_REGISTRY: Record<string, new () => StrategyInterface> = {
   user_defined: UserDefinedStrategy,
   filtered_high_prob_convergence: FilteredHighProbConvergenceStrategy,
   copy_trade: CopyTradeStrategy,
+  custom_composite: CompositeStrategy,
 };
 
 export function listStrategies(): string[] {

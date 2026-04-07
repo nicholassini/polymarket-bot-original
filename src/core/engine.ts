@@ -93,7 +93,7 @@ export class Engine {
    * (e.g. via the dashboard).  The runner immediately receives all
    * cached market data so the strategy has context for its first tick.
    */
-  addRunner(walletId: string, strategyKey: string): boolean {
+  addRunner(walletId: string, strategyKey: string, customConfig?: Record<string, unknown>): boolean {
     // Prevent duplicate runners for the same wallet
     if (this.runners.some((r) => r.walletId === walletId)) {
       logger.warn({ walletId }, 'Runner already exists for wallet');
@@ -113,7 +113,7 @@ export class Engine {
     }
 
     const strategy = new StrategyCtor();
-    const cfg = this.config.strategyConfig[strategyKey] ?? {};
+    const cfg = customConfig ?? this.config.strategyConfig[strategyKey] ?? {};
     strategy.initialize({ wallet: walletState, config: cfg });
 
     this.runners.push({ strategy, walletId, config: cfg });

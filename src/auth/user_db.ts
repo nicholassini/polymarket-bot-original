@@ -114,6 +114,21 @@ export class UserDB {
         value TEXT NOT NULL
       );
     `);
+
+    // Migration: custom_strategies table for user-designed strategies
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS custom_strategies (
+        id          TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL REFERENCES users(id),
+        name        TEXT NOT NULL,
+        description TEXT,
+        config      TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'saved',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+    `);
+    try { this.db.exec('CREATE INDEX idx_custom_strat_user ON custom_strategies(user_id)'); } catch {}
   }
 
   async createUser(email: string, password: string): Promise<User> {
@@ -524,5 +539,44 @@ export class UserDB {
       }
     }
     return count;
+  }
+
+  /* ━━━━━━━━━━━━━━ Custom Strategies CRUD ━━━━━━━━━━━━━━ */
+
+  saveCustomStrategy(id: string, userId: string, name: string, description: string, config: Record<string, unknown>): void {
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO custom_strategies (id, user_id, name, description, config, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'saved', ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, config=excluded.config, updated_at=excluded.updated_at
+    `).run(id, userId, name, description, JSON.stringify(config), now, now);
+  }
+
+  getCustomStrategies(userId: string): Array<{ id: string; name: string; description: string; config: Record<string, unknown>; status: string; createdAt: number; updatedAt: number }> {
+    const rows = this.db.prepare('SELECT * FROM custom_strategies WHERE user_id = ? ORDER BY updated_at DESC').all(userId) as any[];
+    return rows.map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description ?? '',
+      config: JSON.parse(r.config),
+      status: r.status,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  getCustomStrategy(id: string): { id: string; userId: string; name: string; description: string; config: Record<string, unknown>; status: string; createdAt: number; updatedAt: number } | null {
+    const r = this.db.prepare('SELECT * FROM custom_strategies WHERE id = ?').get(id) as any;
+    if (!r) return null;
+    return { id: r.id, userId: r.user_id, name: r.name, description: r.description ?? '', config: JSON.parse(r.config), status: r.status, createdAt: r.created_at, updatedAt: r.updated_at };
+  }
+
+  updateCustomStrategyStatus(id: string, status: string): void {
+    this.db.prepare('UPDATE custom_strategies SET status = ?, updated_at = ? WHERE id = ?').run(status, Date.now(), id);
+  }
+
+  deleteCustomStrategy(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM custom_strategies WHERE id = ?').run(id);
+    return result.changes > 0;
   }
 }

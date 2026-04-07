@@ -1774,7 +1774,140 @@ export class DashboardServer {
 
     /* ─── JSON: strategy catalog ─── */
     if (path === '/api/strategies' && method === 'GET') {
-      json(res, 200, getStrategyCatalog());
+      const catalog = getStrategyCatalog();
+      /* Append user's custom strategies as catalog entries */
+      const customStrats = this.userDb.getCustomStrategies(userId);
+      const customEntries: StrategyCatalogEntry[] = customStrats.map((cs) => ({
+        id: `custom:${cs.id}`,
+        name: cs.name,
+        category: 'Custom',
+        riskLevel: 'User-Defined',
+        description: cs.description || 'Custom strategy designed in the Strategy Builder.',
+        howItWorks: (cs.config.triggers as any[])?.map((t: any) => `Trigger: ${t.type.replace(/_/g, ' ')}`) ?? ['Custom logic'],
+        parameters: {},
+        idealFor: 'Personalized trading',
+        tags: ['custom', cs.status],
+        version: '1.0',
+        author: 'You',
+      }));
+      json(res, 200, [...catalog, ...customEntries]);
+      return;
+    }
+
+    /* ─── JSON: custom strategies CRUD ─── */
+    if (path === '/api/custom-strategies' && method === 'GET') {
+      json(res, 200, { ok: true, strategies: this.userDb.getCustomStrategies(userId) });
+      return;
+    }
+
+    if (path === '/api/custom-strategies' && method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.name ?? '').trim();
+      if (!name) { json(res, 400, { ok: false, error: 'Strategy name is required' }); return; }
+      const id = crypto.randomUUID();
+      const config = body.config as Record<string, unknown> ?? {};
+      /* Basic validation of config shape */
+      if (!config.triggers || !Array.isArray(config.triggers) || config.triggers.length === 0) {
+        json(res, 400, { ok: false, error: 'At least one trigger is required' }); return;
+      }
+      if (!config.filters || typeof config.filters !== 'object') config.filters = {};
+      if (!config.sizing || typeof config.sizing !== 'object') config.sizing = { mode: 'fixed', fixedAmount: 10 };
+      if (!config.exits || typeof config.exits !== 'object') config.exits = { takeProfitBps: 100, stopLossBps: 80 };
+      if (!config.risk || typeof config.risk !== 'object') config.risk = { maxOpenPositions: 5 };
+      this.userDb.saveCustomStrategy(id, userId, name, String(body.description ?? ''), config);
+      this.userDb.trackEvent('custom_strategy_create', userId, { strategyId: id, name });
+      json(res, 201, { ok: true, id, message: `Strategy "${name}" saved` });
+      return;
+    }
+
+    if (path.startsWith('/api/custom-strategies/') && method === 'PUT') {
+      const stratId = decodeURIComponent(path.slice('/api/custom-strategies/'.length));
+      const existing = this.userDb.getCustomStrategy(stratId);
+      if (!existing || existing.userId !== userId) { json(res, 404, { ok: false, error: 'Strategy not found' }); return; }
+      const body = await readBody(req);
+      const name = String(body.name ?? existing.name).trim();
+      const config = (body.config as Record<string, unknown>) ?? existing.config;
+      this.userDb.saveCustomStrategy(stratId, userId, name, String(body.description ?? existing.description), config);
+      json(res, 200, { ok: true, message: `Strategy "${name}" updated` });
+      return;
+    }
+
+    if (path.startsWith('/api/custom-strategies/') && path.endsWith('/deploy') && method === 'POST') {
+      const stratId = decodeURIComponent(path.slice('/api/custom-strategies/'.length, path.length - '/deploy'.length));
+      const strat = this.userDb.getCustomStrategy(stratId);
+      if (!strat || strat.userId !== userId) { json(res, 404, { ok: false, error: 'Strategy not found' }); return; }
+      const body = await readBody(req);
+      const walletId = String(body.walletId ?? '').trim();
+      const capital = Number(body.capital ?? 100);
+      const mode = String(body.mode ?? 'PAPER').toUpperCase();
+      if (!walletId) { json(res, 400, { ok: false, error: 'walletId is required' }); return; }
+
+      // Free plan users can only use PAPER mode
+      const userHasPaidSub = !!user.subscriptionId && (user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing');
+      const userEffectivelyFree = !userHasPaidSub && !user.isAdmin;
+      if (mode === 'LIVE' && userEffectivelyFree) {
+        json(res, 403, { ok: false, error: 'Live trading requires a Pro plan.', upgradeRequired: true }); return;
+      }
+
+      /* Create wallet if it doesn't exist */
+      const existingWallet = this.walletManager.listWallets().find((w) => w.walletId === walletId);
+      if (!existingWallet) {
+        const walletConfig = {
+          id: walletId,
+          mode: mode === 'LIVE' ? 'LIVE' as const : 'PAPER' as const,
+          strategy: 'custom_composite',
+          capital,
+          riskLimits: {
+            maxPositionSize: capital * 0.2,
+            maxExposurePerMarket: capital * 0.3,
+            maxDailyLoss: capital * 0.1,
+            maxOpenTrades: (strat.config as any).risk?.maxOpenPositions ?? 10,
+            maxDrawdown: (strat.config as any).risk?.maxDrawdownPct ? (strat.config as any).risk.maxDrawdownPct / 100 : 0.2,
+          },
+        };
+        const wallet = mode === 'LIVE'
+          ? new PolymarketWallet(walletConfig, 'custom_composite')
+          : new PaperWallet(walletConfig, 'custom_composite');
+        this.walletManager.addWallet(wallet);
+        this.userDb.assignWallet(walletId, userId);
+        this.userDb.saveWalletConfig(walletId, userId, 'custom_composite', capital, mode, walletConfig.riskLimits);
+        userWalletIds.add(walletId);
+      }
+
+      /* Start the engine runner with the custom config */
+      if (this.engine) {
+        this.engine.removeRunner(walletId);
+        this.engine.addRunner(walletId, 'custom_composite', strat.config as Record<string, unknown>);
+      }
+      this.userDb.updateCustomStrategyStatus(stratId, 'deployed');
+      this.userDb.trackEvent('custom_strategy_deploy', userId, { strategyId: stratId, walletId });
+      json(res, 200, { ok: true, message: `Strategy "${strat.name}" deployed to ${walletId}` });
+      return;
+    }
+
+    if (path.startsWith('/api/custom-strategies/') && path.endsWith('/stop') && method === 'POST') {
+      const stratId = decodeURIComponent(path.slice('/api/custom-strategies/'.length, path.length - '/stop'.length));
+      const strat = this.userDb.getCustomStrategy(stratId);
+      if (!strat || strat.userId !== userId) { json(res, 404, { ok: false, error: 'Strategy not found' }); return; }
+      /* Find wallets using this custom strategy and stop their runners */
+      for (const wid of userWalletIds) {
+        const ws = this.walletManager.getWallet(wid)?.getState();
+        if (ws && ws.assignedStrategy === 'custom_composite') {
+          if (this.engine) this.engine.pauseRunner(wid);
+        }
+      }
+      this.userDb.updateCustomStrategyStatus(stratId, 'stopped');
+      json(res, 200, { ok: true, message: `Strategy "${strat.name}" stopped` });
+      return;
+    }
+
+    if (path.startsWith('/api/custom-strategies/') && method === 'DELETE') {
+      const stratId = decodeURIComponent(path.slice('/api/custom-strategies/'.length));
+      const strat = this.userDb.getCustomStrategy(stratId);
+      if (!strat || strat.userId !== userId) { json(res, 404, { ok: false, error: 'Strategy not found' }); return; }
+      if (strat.status === 'deployed') { json(res, 400, { ok: false, error: 'Stop the strategy before deleting' }); return; }
+      this.userDb.deleteCustomStrategy(stratId);
+      json(res, 200, { ok: true, message: `Strategy "${strat.name}" deleted` });
       return;
     }
 
@@ -2405,6 +2538,29 @@ td{font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)}.o-YES{col
 .use-btn{margin-top:12px}.use-btn .btn{font-size:12px;padding:7px 16px;background:var(--accent2);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer}
 .use-btn .btn:hover{background:#5558e6}
 
+/* ═══ Strategy Builder ═══ */
+.builder-steps{display:flex;gap:4px;flex-wrap:wrap}
+.bstep{font-size:12px;padding:6px 14px;border-radius:20px;background:var(--surface2);color:var(--muted);font-weight:600;border:1px solid var(--border);transition:all .2s}
+.bstep.active{background:var(--accent2);color:#fff;border-color:var(--accent2)}
+.bstep.done{background:rgba(74,222,128,.12);color:#4ade80;border-color:rgba(74,222,128,.25)}
+.builder-page .fg{margin-bottom:12px}
+.builder-page label{display:block;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px}
+.builder-page input,.builder-page select{width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:8px;font-size:13px;font-family:inherit}
+.builder-page input:focus,.builder-page select:focus{outline:none;border-color:var(--accent2)}
+.bt-trigger{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:10px}
+.bt-trigger-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.bt-trigger-hdr strong{font-size:13px;color:var(--accent2)}
+.bt-trigger-del{background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 6px}
+.bt-trigger .form-grid{gap:8px 12px}
+.bt-opt:hover{background:var(--surface);border-radius:6px}
+.risk-User-Defined{background:rgba(168,85,247,.12);color:#a855f7}
+.cs-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;transition:border-color .2s}
+.cs-card:hover{border-color:var(--accent2)}
+.cs-status{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:3px 10px;border-radius:20px}
+.cs-status.saved{background:rgba(255,193,7,.12);color:var(--yellow)}
+.cs-status.deployed{background:rgba(0,214,143,.12);color:var(--green)}
+.cs-status.stopped{background:rgba(255,77,106,.12);color:var(--red)}
+
 /* ═══ Strategy Detail Panel ═══ */
 .strat-detail{display:none;animation:slideIn .25s ease-out}
 .strat-detail.open{display:block}
@@ -2848,7 +3004,10 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
     <div class="upsell-text"><h4>Unlock Live Strategy Execution</h4><p>Paper trading is great for testing. Go Pro to deploy strategies with real capital and maximize returns.</p></div>
     <button class="upsell-cta" onclick="window.location.href='/checkout?plan=pro'">Go Pro \u2014 from $99/mo</button>
   </div>
-  <div class="section-title" id="strat-list-title"><span class="icon">\uD83E\uDDE0</span> Strategy Library</div>
+  <div class="section-title" id="strat-list-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <span><span class="icon">\uD83E\uDDE0</span> Strategy Library</span>
+    <button class="btn" id="open-builder-btn" style="background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;font-weight:700;font-size:13px;padding:10px 20px;border-radius:8px;border:none;cursor:pointer">\uD83D\uDD27 Design Custom Strategy</button>
+  </div>
   <div class="strat-grid" id="strat-grid"></div>
 
   <!-- Strategy Detail Panel (hidden by default) -->
@@ -2953,6 +3112,154 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
       <span class="strat-ideal" id="sd-ideal"></span>
     </div>
   </div>
+
+  <!-- Strategy Builder Panel (hidden by default) -->
+  <div id="strat-builder" style="display:none">
+    <div style="margin-bottom:16px">
+      <button class="btn btn-sm" id="builder-back" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);font-size:12px;padding:8px 16px;border-radius:6px;cursor:pointer">\u2190 Back to Strategy Library</button>
+    </div>
+    <div class="section-title"><span class="icon">\uD83D\uDD27</span> Custom Strategy Designer</div>
+
+    <!-- Step Indicator -->
+    <div class="builder-steps" id="builder-step-bar" style="display:flex;gap:4px;margin-bottom:24px">
+      <div class="bstep active" data-step="1">1. Name</div>
+      <div class="bstep" data-step="2">2. Filters</div>
+      <div class="bstep" data-step="3">3. Triggers</div>
+      <div class="bstep" data-step="4">4. Sizing</div>
+      <div class="bstep" data-step="5">5. Exits</div>
+      <div class="bstep" data-step="6">6. Risk</div>
+      <div class="bstep" data-step="7">7. Review</div>
+    </div>
+
+    <!-- Step 1: Name -->
+    <div class="builder-page" id="bp-1">
+      <h4 style="margin-bottom:16px">\u270F\uFE0F Name Your Strategy</h4>
+      <div class="form-grid" style="max-width:500px">
+        <div class="fg"><label>Strategy Name</label><input id="bs-name" placeholder="e.g. Momentum Sniper" maxlength="60"></div>
+        <div class="fg"><label>Description (optional)</label><textarea id="bs-desc" rows="2" placeholder="Brief description..." style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;resize:vertical"></textarea></div>
+      </div>
+      <div class="fg" style="margin-top:16px">
+        <label>Start from Template (optional)</label>
+        <select id="bs-template" style="width:auto;min-width:250px;background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:8px;font-size:13px">
+          <option value="">Blank — build from scratch</option>
+          <option value="probability_sniper">Probability Sniper</option>
+          <option value="mean_reversion">Mean Reversion</option>
+          <option value="momentum_surfer">Momentum Surfer</option>
+          <option value="event_scalper">Event Scalper</option>
+          <option value="conservative_income">Conservative Income</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Step 2: Filters -->
+    <div class="builder-page" id="bp-2" style="display:none">
+      <h4 style="margin-bottom:16px">\uD83D\uDD0D Market Filters</h4>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px">Narrow which markets your strategy will consider.</p>
+      <div class="form-grid">
+        <div class="fg"><label>Min Liquidity ($)</label><input id="bf-minLiq" type="number" value="500" min="0"></div>
+        <div class="fg"><label>Min 24h Volume ($)</label><input id="bf-minVol" type="number" value="1000" min="0"></div>
+        <div class="fg"><label>Max Spread (bps)</label><input id="bf-maxSpread" type="number" value="200" min="0"></div>
+        <div class="fg"><label>Price Floor (YES)</label><input id="bf-priceFloor" type="number" value="0.05" min="0.01" max="0.99" step="0.01"></div>
+        <div class="fg"><label>Price Ceiling (YES)</label><input id="bf-priceCeiling" type="number" value="0.95" min="0.01" max="0.99" step="0.01"></div>
+        <div class="fg"><label>Min Days to Resolution</label><input id="bf-minDays" type="number" value="" placeholder="any" min="0"></div>
+        <div class="fg"><label>Max Days to Resolution</label><input id="bf-maxDays" type="number" value="" placeholder="any" min="0"></div>
+      </div>
+    </div>
+
+    <!-- Step 3: Triggers -->
+    <div class="builder-page" id="bp-3" style="display:none">
+      <h4 style="margin-bottom:16px">\uD83C\uDFAF Entry Triggers</h4>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Add triggers that generate buy/sell signals. Multiple triggers can be combined.</p>
+      <div style="margin-bottom:16px">
+        <label style="font-size:13px;font-weight:600;margin-right:8px">Trigger Logic:</label>
+        <select id="bt-logic" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:6px;font-size:13px">
+          <option value="OR">OR — any trigger fires</option>
+          <option value="AND">AND — all must fire</option>
+        </select>
+      </div>
+      <div id="bt-list"></div>
+      <button class="btn btn-sm" id="bt-add" style="margin-top:12px;background:var(--accent);color:#000;font-weight:600;padding:8px 16px;border-radius:6px;border:none;cursor:pointer">+ Add Trigger</button>
+
+      <div id="bt-add-menu" style="display:none;margin-top:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px;max-width:400px">
+        <div class="bt-opt" data-type="ema_crossover" style="padding:8px 12px;cursor:pointer;border-radius:6px;font-size:13px">\uD83D\uDCC8 EMA Crossover</div>
+        <div class="bt-opt" data-type="rsi_extreme" style="padding:8px 12px;cursor:pointer;border-radius:6px;font-size:13px">\uD83D\uDCCA RSI Extreme</div>
+        <div class="bt-opt" data-type="price_threshold" style="padding:8px 12px;cursor:pointer;border-radius:6px;font-size:13px">\uD83D\uDCB0 Price Threshold</div>
+        <div class="bt-opt" data-type="volume_spike" style="padding:8px 12px;cursor:pointer;border-radius:6px;font-size:13px">\uD83D\uDD25 Volume Spike</div>
+        <div class="bt-opt" data-type="probability_band" style="padding:8px 12px;cursor:pointer;border-radius:6px;font-size:13px">\uD83C\uDFB0 Probability Band</div>
+        <div class="bt-opt" data-type="mean_reversion" style="padding:8px 12px;cursor:pointer;border-radius:6px;font-size:13px">\u21A9\uFE0F Mean Reversion</div>
+        <div class="bt-opt" data-type="momentum_breakout" style="padding:8px 12px;cursor:pointer;border-radius:6px;font-size:13px">\uD83D\uDE80 Momentum Breakout</div>
+      </div>
+    </div>
+
+    <!-- Step 4: Sizing -->
+    <div class="builder-page" id="bp-4" style="display:none">
+      <h4 style="margin-bottom:16px">\uD83D\uDCB5 Position Sizing</h4>
+      <div class="form-grid" style="max-width:500px">
+        <div class="fg"><label>Sizing Mode</label>
+          <select id="bsz-mode" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:8px;font-size:13px">
+            <option value="fixed">Fixed Amount ($)</option>
+            <option value="percent_of_capital">% of Capital</option>
+            <option value="kelly">Kelly Criterion</option>
+            <option value="confidence_scaled">Confidence Scaled</option>
+            <option value="liquidity_aware">Liquidity Aware</option>
+          </select>
+        </div>
+        <div class="fg" id="bsz-fixed-wrap"><label>Fixed Amount ($)</label><input id="bsz-fixed" type="number" value="10" min="1"></div>
+        <div class="fg" id="bsz-pct-wrap" style="display:none"><label>Position Size %</label><input id="bsz-pct" type="number" value="2" min="0.1" max="25" step="0.1"></div>
+        <div class="fg" id="bsz-kelly-wrap" style="display:none"><label>Kelly Fraction</label><input id="bsz-kelly" type="number" value="0.25" min="0.1" max="1" step="0.05"></div>
+        <div class="fg" id="bsz-base-wrap" style="display:none"><label>Base Size ($)</label><input id="bsz-base" type="number" value="10" min="1"></div>
+        <div class="fg" id="bsz-conf-wrap" style="display:none"><label>Confidence Multiplier</label><input id="bsz-conf" type="number" value="2" min="0.5" max="10" step="0.5"></div>
+        <div class="fg" id="bsz-liq-wrap" style="display:none"><label>Max Liquidity %</label><input id="bsz-liq" type="number" value="0.3" min="0.01" max="5" step="0.01"></div>
+      </div>
+    </div>
+
+    <!-- Step 5: Exits -->
+    <div class="builder-page" id="bp-5" style="display:none">
+      <h4 style="margin-bottom:16px">\uD83D\uDEAA Exit Rules</h4>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px">Configure when to close positions. Multiple rules can stack.</p>
+      <div class="form-grid">
+        <div class="fg"><label>\u2705 Take Profit (bps)</label><input id="be-tp" type="number" value="100" min="0" placeholder="0 = disabled"></div>
+        <div class="fg"><label>\u274C Stop Loss (bps)</label><input id="be-sl" type="number" value="80" min="0" placeholder="0 = disabled"></div>
+        <div class="fg"><label>\uD83D\uDCC9 Trailing Activation (bps)</label><input id="be-trailAct" type="number" value="60" min="0" placeholder="0 = disabled"></div>
+        <div class="fg"><label>\uD83D\uDCC9 Trailing Distance (bps)</label><input id="be-trailDist" type="number" value="35" min="0"></div>
+        <div class="fg"><label>\u23F0 Max Hold Time (minutes)</label><input id="be-maxHold" type="number" value="120" min="0" placeholder="0 = unlimited"></div>
+        <div class="fg"><label>\uD83C\uDFAF Target Price (YES)</label><input id="be-target" type="number" value="" min="0" max="1" step="0.01" placeholder="optional"></div>
+      </div>
+    </div>
+
+    <!-- Step 6: Risk -->
+    <div class="builder-page" id="bp-6" style="display:none">
+      <h4 style="margin-bottom:16px">\uD83D\uDEE1\uFE0F Risk Controls</h4>
+      <div class="form-grid">
+        <div class="fg"><label>Max Open Positions</label><input id="br-maxPos" type="number" value="5" min="1" max="50"></div>
+        <div class="fg"><label>Max Per Market ($)</label><input id="br-maxPer" type="number" value="" placeholder="unlimited" min="0"></div>
+        <div class="fg"><label>Cooldown Between Trades (sec)</label><input id="br-cooldown" type="number" value="60" min="5"></div>
+        <div class="fg"><label>Max Daily Loss (%)</label><input id="br-dailyLoss" type="number" value="10" min="0" max="100"></div>
+        <div class="fg"><label>Max Drawdown (%)</label><input id="br-drawdown" type="number" value="20" min="0" max="100"></div>
+      </div>
+    </div>
+
+    <!-- Step 7: Review -->
+    <div class="builder-page" id="bp-7" style="display:none">
+      <h4 style="margin-bottom:16px">\u2705 Review & Save</h4>
+      <div id="builder-review" style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:20px;font-size:13px;max-height:400px;overflow-y:auto"></div>
+      <div class="form-msg" id="builder-msg" style="margin-top:12px"></div>
+    </div>
+
+    <!-- Nav buttons -->
+    <div style="display:flex;gap:12px;margin-top:24px">
+      <button class="btn btn-sm" id="builder-prev" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:10px 20px;border-radius:8px;cursor:pointer;display:none">\u2190 Previous</button>
+      <button class="btn btn-sm" id="builder-next" style="background:var(--accent);color:#000;font-weight:700;padding:10px 20px;border-radius:8px;border:none;cursor:pointer">Next \u2192</button>
+      <button class="btn btn-sm" id="builder-save" style="background:#22c55e;color:#000;font-weight:700;padding:10px 20px;border-radius:8px;border:none;cursor:pointer;display:none">\uD83D\uDCBE Save Strategy</button>
+    </div>
+  </div>
+
+  <!-- My Custom Strategies Section -->
+  <div id="my-custom-strats" style="display:none;margin-top:24px">
+    <div class="section-title"><span class="icon">\uD83D\uDD27</span> My Custom Strategies</div>
+    <div id="cs-grid" class="strat-grid"></div>
+  </div>
+
 </div>
 
 <!-- ═════════════ TAB: LIVE MARKETS ═════════════ -->
@@ -4739,6 +5046,378 @@ $('#strat-back').addEventListener('click',()=>{
   $('#strat-grid').style.display='';
   $('#strat-list-title').style.display='';
 });
+
+/* ─── Strategy Builder ─── */
+let builderStep=1;
+const builderTriggers=[];
+const TEMPLATES={
+  probability_sniper:{
+    triggers:[{type:'price_threshold',params:{buyBelow:0.15,sellAbove:0}}],
+    filters:{minLiquidity:1000,min24hVolume:2000,priceFloor:0.01,priceCeiling:0.15},
+    sizing:{mode:'fixed',fixedAmount:15},
+    exits:{takeProfitBps:200,stopLossBps:100,maxHoldMinutes:720},
+    risk:{maxOpenPositions:8,cooldownSeconds:120,maxDailyLossPct:10}
+  },
+  mean_reversion:{
+    triggers:[{type:'mean_reversion',params:{zScoreThreshold:2.0,lookbackPeriod:20}},{type:'rsi_extreme',params:{rsiPeriod:14,overbought:75,oversold:25}}],
+    filters:{minLiquidity:500,priceFloor:0.1,priceCeiling:0.9},
+    sizing:{mode:'percent_of_capital',positionSizePct:0.02},
+    exits:{takeProfitBps:80,stopLossBps:60,trailingActivationBps:50,trailingDistanceBps:30,maxHoldMinutes:60},
+    risk:{maxOpenPositions:6,cooldownSeconds:90,maxDailyLossPct:8}
+  },
+  momentum_surfer:{
+    triggers:[{type:'ema_crossover',params:{emaShort:5,emaLong:20,direction:'both'}},{type:'volume_spike',params:{volumeMultiplier:2}}],
+    filters:{minLiquidity:500,min24hVolume:1000,priceFloor:0.1,priceCeiling:0.9},
+    sizing:{mode:'confidence_scaled',baseSize:10,confidenceMultiplier:2},
+    exits:{takeProfitBps:150,stopLossBps:100,trailingActivationBps:80,trailingDistanceBps:40,maxHoldMinutes:240},
+    risk:{maxOpenPositions:5,cooldownSeconds:60,maxDailyLossPct:12}
+  },
+  event_scalper:{
+    triggers:[{type:'volume_spike',params:{volumeMultiplier:3}},{type:'momentum_breakout',params:{breakoutPeriod:10,minMovePercent:2}}],
+    filters:{minLiquidity:500,min24hVolume:5000,maxDaysToResolution:1},
+    sizing:{mode:'fixed',fixedAmount:20},
+    exits:{takeProfitBps:60,stopLossBps:40,maxHoldMinutes:30},
+    risk:{maxOpenPositions:3,cooldownSeconds:30,maxDailyLossPct:15}
+  },
+  conservative_income:{
+    triggers:[{type:'probability_band',params:{minProb:0.85,maxProb:0.97}}],
+    filters:{minLiquidity:2000,min24hVolume:3000,priceFloor:0.85,priceCeiling:0.97},
+    sizing:{mode:'percent_of_capital',positionSizePct:0.01},
+    exits:{takeProfitBps:50,stopLossBps:30,maxHoldMinutes:1440},
+    risk:{maxOpenPositions:10,cooldownSeconds:180,maxDailyLossPct:5,maxDrawdownPct:10}
+  }
+};
+
+function openBuilder(){
+  stratDetailOpen=false;
+  $('#strat-detail').classList.remove('open');
+  $('#strat-grid').style.display='none';
+  $('#strat-list-title').style.display='none';
+  $('#strat-builder').style.display='';
+  builderStep=1;
+  builderTriggers.length=0;
+  renderBuilderStep();
+}
+
+function closeBuilder(){
+  $('#strat-builder').style.display='none';
+  $('#strat-grid').style.display='';
+  $('#strat-list-title').style.display='';
+}
+
+$('#open-builder-btn').addEventListener('click',openBuilder);
+$('#builder-back').addEventListener('click',closeBuilder);
+
+$('#bs-template').addEventListener('change',function(){
+  const t=TEMPLATES[this.value];
+  if(!t)return;
+  builderTriggers.length=0;
+  t.triggers.forEach(tr=>builderTriggers.push({...tr,params:{...tr.params}}));
+  /* Pre-fill filters */
+  const f=t.filters||{};
+  if(f.minLiquidity!=null)$('#bf-minLiq').value=f.minLiquidity;
+  if(f.min24hVolume!=null)$('#bf-minVol').value=f.min24hVolume;
+  if(f.maxSpreadBps!=null)$('#bf-maxSpread').value=f.maxSpreadBps;
+  if(f.priceFloor!=null)$('#bf-priceFloor').value=f.priceFloor;
+  if(f.priceCeiling!=null)$('#bf-priceCeiling').value=f.priceCeiling;
+  if(f.minDaysToResolution!=null)$('#bf-minDays').value=f.minDaysToResolution;
+  if(f.maxDaysToResolution!=null)$('#bf-maxDays').value=f.maxDaysToResolution;
+  /* Pre-fill sizing */
+  const sz=t.sizing||{};
+  $('#bsz-mode').value=sz.mode||'fixed';
+  toggleSizingFields();
+  if(sz.fixedAmount!=null)$('#bsz-fixed').value=sz.fixedAmount;
+  if(sz.positionSizePct!=null)$('#bsz-pct').value=sz.positionSizePct*100;
+  if(sz.kellyFraction!=null)$('#bsz-kelly').value=sz.kellyFraction;
+  if(sz.baseSize!=null)$('#bsz-base').value=sz.baseSize;
+  if(sz.confidenceMultiplier!=null)$('#bsz-conf').value=sz.confidenceMultiplier;
+  if(sz.maxLiquidityPct!=null)$('#bsz-liq').value=sz.maxLiquidityPct*100;
+  /* Pre-fill exits */
+  const ex=t.exits||{};
+  if(ex.takeProfitBps!=null)$('#be-tp').value=ex.takeProfitBps;
+  if(ex.stopLossBps!=null)$('#be-sl').value=ex.stopLossBps;
+  if(ex.trailingActivationBps!=null)$('#be-trailAct').value=ex.trailingActivationBps;
+  if(ex.trailingDistanceBps!=null)$('#be-trailDist').value=ex.trailingDistanceBps;
+  if(ex.maxHoldMinutes!=null)$('#be-maxHold').value=ex.maxHoldMinutes;
+  /* Pre-fill risk */
+  const rk=t.risk||{};
+  if(rk.maxOpenPositions!=null)$('#br-maxPos').value=rk.maxOpenPositions;
+  if(rk.cooldownSeconds!=null)$('#br-cooldown').value=rk.cooldownSeconds;
+  if(rk.maxDailyLossPct!=null)$('#br-dailyLoss').value=rk.maxDailyLossPct;
+  if(rk.maxDrawdownPct!=null)$('#br-drawdown').value=rk.maxDrawdownPct;
+  renderTriggerList();
+});
+
+function renderBuilderStep(){
+  for(let i=1;i<=7;i++){
+    const el=$('#bp-'+i);
+    if(el)el.style.display=i===builderStep?'':'none';
+  }
+  document.querySelectorAll('.bstep').forEach(el=>{
+    const s=Number(el.getAttribute('data-step'));
+    el.className='bstep'+(s===builderStep?' active':s<builderStep?' done':'');
+  });
+  $('#builder-prev').style.display=builderStep>1?'':'none';
+  $('#builder-next').style.display=builderStep<7?'':'none';
+  $('#builder-save').style.display=builderStep===7?'':'none';
+  if(builderStep===3)renderTriggerList();
+  if(builderStep===7)renderBuilderReview();
+}
+
+$('#builder-next').addEventListener('click',()=>{
+  if(builderStep===1&&!$('#bs-name').value.trim()){showMsg('builder-msg','err','Strategy name is required');return}
+  if(builderStep===3&&builderTriggers.length===0){showMsg('builder-msg','err','Add at least one trigger');return}
+  if(builderStep<7){builderStep++;renderBuilderStep()}
+});
+$('#builder-prev').addEventListener('click',()=>{if(builderStep>1){builderStep--;renderBuilderStep()}});
+
+/* Trigger management */
+const TRIGGER_LABELS={ema_crossover:'\uD83D\uDCC8 EMA Crossover',rsi_extreme:'\uD83D\uDCCA RSI Extreme',price_threshold:'\uD83D\uDCB0 Price Threshold',volume_spike:'\uD83D\uDD25 Volume Spike',probability_band:'\uD83C\uDFB0 Probability Band',mean_reversion:'\u21A9\uFE0F Mean Reversion',momentum_breakout:'\uD83D\uDE80 Momentum Breakout'};
+
+const TRIGGER_FIELDS={
+  ema_crossover:[{key:'emaShort',label:'Short EMA Period',def:5},{key:'emaLong',label:'Long EMA Period',def:20},{key:'direction',label:'Direction',def:'both',type:'select',options:['both','bullish','bearish']}],
+  rsi_extreme:[{key:'rsiPeriod',label:'RSI Period',def:14},{key:'overbought',label:'Overbought',def:70},{key:'oversold',label:'Oversold',def:30}],
+  price_threshold:[{key:'buyBelow',label:'Buy Below (YES price)',def:0.15},{key:'sellAbove',label:'Sell Above (YES price)',def:0.85}],
+  volume_spike:[{key:'volumeMultiplier',label:'Volume Multiplier (x)',def:3}],
+  probability_band:[{key:'minProb',label:'Min Probability',def:0.1},{key:'maxProb',label:'Max Probability',def:0.9}],
+  mean_reversion:[{key:'zScoreThreshold',label:'Z-Score Threshold',def:2.0},{key:'lookbackPeriod',label:'Lookback Period',def:20}],
+  momentum_breakout:[{key:'breakoutPeriod',label:'Breakout Period',def:20},{key:'minMovePercent',label:'Min Move %',def:3}]
+};
+
+$('#bt-add').addEventListener('click',()=>{
+  const menu=$('#bt-add-menu');
+  menu.style.display=menu.style.display==='none'?'':'none';
+});
+
+document.querySelectorAll('.bt-opt').forEach(el=>{
+  el.addEventListener('click',()=>{
+    const type=el.getAttribute('data-type');
+    const fields=TRIGGER_FIELDS[type]||[];
+    const params={};
+    fields.forEach(f=>params[f.key]=f.def);
+    builderTriggers.push({type,params});
+    $('#bt-add-menu').style.display='none';
+    renderTriggerList();
+  });
+});
+
+function renderTriggerList(){
+  const list=$('#bt-list');
+  if(builderTriggers.length===0){list.innerHTML='<div style="color:var(--muted);font-size:13px;font-style:italic">No triggers added yet. Click "+ Add Trigger" below.</div>';return}
+  list.innerHTML=builderTriggers.map((t,i)=>{
+    const fields=TRIGGER_FIELDS[t.type]||[];
+    const fieldHtml=fields.map(f=>{
+      if(f.type==='select'){
+        const opts=(f.options||[]).map(o=>'<option value="'+o+'"'+(t.params[f.key]===o?' selected':'')+'>'+o+'</option>').join('');
+        return '<div class="fg"><label>'+f.label+'</label><select class="bt-param" data-idx="'+i+'" data-key="'+f.key+'">'+opts+'</select></div>';
+      }
+      return '<div class="fg"><label>'+f.label+'</label><input type="number" class="bt-param" data-idx="'+i+'" data-key="'+f.key+'" value="'+(t.params[f.key]??f.def)+'" step="any"></div>';
+    }).join('');
+    return '<div class="bt-trigger"><div class="bt-trigger-hdr"><strong>'+(TRIGGER_LABELS[t.type]||t.type)+'</strong><button class="bt-trigger-del" data-idx="'+i+'">\u2716 Remove</button></div><div class="form-grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">'+fieldHtml+'</div></div>';
+  }).join('');
+
+  /* Wire up param change events */
+  list.querySelectorAll('.bt-param').forEach(el=>{
+    el.addEventListener('change',()=>{
+      const idx=Number(el.getAttribute('data-idx'));
+      const key=el.getAttribute('data-key');
+      builderTriggers[idx].params[key]=el.tagName==='SELECT'?el.value:Number(el.value);
+    });
+  });
+  list.querySelectorAll('.bt-trigger-del').forEach(el=>{
+    el.addEventListener('click',()=>{
+      builderTriggers.splice(Number(el.getAttribute('data-idx')),1);
+      renderTriggerList();
+    });
+  });
+}
+
+/* Sizing mode toggles */
+function toggleSizingFields(){
+  const m=$('#bsz-mode').value;
+  $('#bsz-fixed-wrap').style.display=m==='fixed'?'':'none';
+  $('#bsz-pct-wrap').style.display=m==='percent_of_capital'?'':'none';
+  $('#bsz-kelly-wrap').style.display=m==='kelly'?'':'none';
+  $('#bsz-base-wrap').style.display=m==='confidence_scaled'?'':'none';
+  $('#bsz-conf-wrap').style.display=m==='confidence_scaled'?'':'none';
+  $('#bsz-liq-wrap').style.display=m==='liquidity_aware'?'':'none';
+}
+$('#bsz-mode').addEventListener('change',toggleSizingFields);
+
+function buildStrategyConfig(){
+  const fV=v=>v===''?undefined:Number(v);
+  return{
+    triggers:builderTriggers.map(t=>({type:t.type,params:{...t.params}})),
+    triggerLogic:$('#bt-logic').value,
+    filters:{
+      minLiquidity:fV($('#bf-minLiq').value),
+      min24hVolume:fV($('#bf-minVol').value),
+      maxSpreadBps:fV($('#bf-maxSpread').value),
+      priceFloor:fV($('#bf-priceFloor').value),
+      priceCeiling:fV($('#bf-priceCeiling').value),
+      minDaysToResolution:fV($('#bf-minDays').value),
+      maxDaysToResolution:fV($('#bf-maxDays').value)
+    },
+    sizing:(function(){
+      const m=$('#bsz-mode').value;
+      const s={mode:m};
+      if(m==='fixed')s.fixedAmount=Number($('#bsz-fixed').value);
+      if(m==='percent_of_capital')s.positionSizePct=Number($('#bsz-pct').value)/100;
+      if(m==='kelly')s.kellyFraction=Number($('#bsz-kelly').value);
+      if(m==='confidence_scaled'){s.baseSize=Number($('#bsz-base').value);s.confidenceMultiplier=Number($('#bsz-conf').value)}
+      if(m==='liquidity_aware')s.maxLiquidityPct=Number($('#bsz-liq').value)/100;
+      return s;
+    })(),
+    exits:{
+      takeProfitBps:fV($('#be-tp').value),
+      stopLossBps:fV($('#be-sl').value),
+      trailingActivationBps:fV($('#be-trailAct').value),
+      trailingDistanceBps:fV($('#be-trailDist').value),
+      maxHoldMinutes:fV($('#be-maxHold').value),
+      exitAtPrice:fV($('#be-target').value)
+    },
+    risk:{
+      maxOpenPositions:Number($('#br-maxPos').value)||5,
+      maxPerMarket:fV($('#br-maxPer').value),
+      cooldownSeconds:Number($('#br-cooldown').value)||60,
+      maxDailyLossPct:Number($('#br-dailyLoss').value)||10,
+      maxDrawdownPct:Number($('#br-drawdown').value)||20
+    }
+  };
+}
+
+function renderBuilderReview(){
+  const cfg=buildStrategyConfig();
+  const name=$('#bs-name').value.trim();
+  const desc=$('#bs-desc').value.trim();
+  let h='<div style="margin-bottom:16px"><strong style="font-size:16px;color:var(--text)">'+name+'</strong>';
+  if(desc)h+='<div style="color:var(--muted);font-size:12px;margin-top:4px">'+desc+'</div>';
+  h+='</div>';
+
+  h+='<div style="margin-bottom:14px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);font-weight:600;margin-bottom:6px">Triggers ('+cfg.triggerLogic+')</div>';
+  cfg.triggers.forEach(t=>{
+    h+='<div style="padding:4px 0;font-size:13px">'+(TRIGGER_LABELS[t.type]||t.type)+' — '+Object.entries(t.params).map(([k,v])=>k+'='+v).join(', ')+'</div>';
+  });
+  h+='</div>';
+
+  h+='<div style="margin-bottom:14px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);font-weight:600;margin-bottom:6px">Filters</div>';
+  Object.entries(cfg.filters).filter(([,v])=>v!=null).forEach(([k,v])=>{
+    h+='<div style="font-size:13px;padding:2px 0">'+k+': '+v+'</div>';
+  });
+  h+='</div>';
+
+  h+='<div style="margin-bottom:14px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);font-weight:600;margin-bottom:6px">Position Sizing</div>';
+  h+='<div style="font-size:13px">Mode: '+cfg.sizing.mode+'</div>';
+  Object.entries(cfg.sizing).filter(([k])=>k!=='mode').forEach(([k,v])=>{
+    h+='<div style="font-size:13px;padding:2px 0">'+k+': '+v+'</div>';
+  });
+  h+='</div>';
+
+  h+='<div style="margin-bottom:14px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);font-weight:600;margin-bottom:6px">Exit Rules</div>';
+  Object.entries(cfg.exits).filter(([,v])=>v!=null).forEach(([k,v])=>{
+    h+='<div style="font-size:13px;padding:2px 0">'+k+': '+v+'</div>';
+  });
+  h+='</div>';
+
+  h+='<div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);font-weight:600;margin-bottom:6px">Risk Controls</div>';
+  Object.entries(cfg.risk).filter(([,v])=>v!=null).forEach(([k,v])=>{
+    h+='<div style="font-size:13px;padding:2px 0">'+k+': '+v+'</div>';
+  });
+  h+='</div>';
+
+  $('#builder-review').innerHTML=h;
+}
+
+$('#builder-save').addEventListener('click',async()=>{
+  const name=$('#bs-name').value.trim();
+  if(!name)return;
+  const cfg=buildStrategyConfig();
+  const desc=$('#bs-desc').value.trim();
+  try{
+    const r=await fetch('/api/custom-strategies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,description:desc,config:cfg})});
+    const j=await r.json();
+    if(j.ok){
+      showMsg('builder-msg','ok','\u2705 '+j.message);
+      setTimeout(()=>{closeBuilder();loadCustomStrategies();refresh()},1500);
+    }else{
+      showMsg('builder-msg','err',j.error||'Failed to save');
+    }
+  }catch(e){showMsg('builder-msg','err','Network error')}
+});
+
+/* ─── My Custom Strategies ─── */
+async function loadCustomStrategies(){
+  try{
+    const r=await fetch('/api/custom-strategies');
+    const data=await r.json();
+    const strats=data.strategies||[];
+    const section=$('#my-custom-strats');
+    if(strats.length===0){section.style.display='none';return}
+    section.style.display='';
+    const grid=$('#cs-grid');
+    grid.innerHTML=strats.map(s=>{
+      const triggers=(s.config.triggers||[]).map(t=>(TRIGGER_LABELS[t.type]||t.type)).join(', ');
+      const sizing=s.config.sizing?s.config.sizing.mode:'—';
+      const btnsHtml=s.status==='deployed'
+        ?'<button class="btn btn-sm cs-stop" data-id="'+s.id+'" style="background:var(--red);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer">\u23F9 Stop</button>'
+        :'<button class="btn btn-sm cs-deploy" data-id="'+s.id+'" style="background:var(--green);color:#000;border:none;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600">\u25B6 Deploy</button>'+
+         ' <button class="btn btn-sm cs-delete" data-id="'+s.id+'" style="background:none;color:var(--red);border:1px solid var(--red);padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer">\uD83D\uDDD1 Delete</button>';
+      return '<div class="cs-card">'+
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px">'+
+          '<div><div style="font-size:15px;font-weight:700">'+s.name+'</div>'+
+            (s.description?'<div style="font-size:12px;color:var(--muted);margin-top:4px">'+s.description+'</div>':'')+
+          '</div>'+
+          '<span class="cs-status '+s.status+'">'+s.status+'</span>'+
+        '</div>'+
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Triggers: '+triggers+'</div>'+
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Sizing: '+sizing+'</div>'+
+        '<div style="display:flex;gap:8px">'+btnsHtml+'</div>'+
+      '</div>';
+    }).join('');
+
+    /* Wire deploy/stop/delete */
+    grid.querySelectorAll('.cs-deploy').forEach(btn=>{
+      btn.addEventListener('click',async()=>{
+        const id=btn.getAttribute('data-id');
+        const walletId=prompt('Enter wallet ID for deployment (creates new paper wallet if needed):');
+        if(!walletId)return;
+        const capital=Number(prompt('Capital to allocate ($):','500'));
+        if(!capital||capital<=0)return;
+        try{
+          const r=await fetch('/api/custom-strategies/'+encodeURIComponent(id)+'/deploy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({walletId,capital,mode:'PAPER'})});
+          const j=await r.json();
+          if(j.ok){loadCustomStrategies();refresh();alert('\u2705 '+j.message)}
+          else{alert(j.error||'Deploy failed')}
+        }catch(e){alert('Network error')}
+      });
+    });
+    grid.querySelectorAll('.cs-stop').forEach(btn=>{
+      btn.addEventListener('click',async()=>{
+        const id=btn.getAttribute('data-id');
+        if(!confirm('Stop this strategy?'))return;
+        try{
+          const r=await fetch('/api/custom-strategies/'+encodeURIComponent(id)+'/stop',{method:'POST'});
+          const j=await r.json();
+          if(j.ok){loadCustomStrategies();refresh()}
+          else{alert(j.error||'Stop failed')}
+        }catch(e){alert('Network error')}
+      });
+    });
+    grid.querySelectorAll('.cs-delete').forEach(btn=>{
+      btn.addEventListener('click',async()=>{
+        const id=btn.getAttribute('data-id');
+        if(!confirm('Delete this custom strategy? This cannot be undone.'))return;
+        try{
+          const r=await fetch('/api/custom-strategies/'+encodeURIComponent(id),{method:'DELETE'});
+          const j=await r.json();
+          if(j.ok){loadCustomStrategies();refresh()}
+          else{alert(j.error||'Delete failed')}
+        }catch(e){alert('Network error')}
+      });
+    });
+  }catch(e){console.error('Failed to load custom strategies',e)}
+}
+loadCustomStrategies();
 
 /* ─── Whale Address Management ─── */
 async function loadWhaleAddresses(){
