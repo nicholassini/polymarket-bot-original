@@ -148,10 +148,24 @@ interface PerfMetrics {
 
 /* ── TTL Cache for market metadata ── */
 class MarketCache {
+  private static readonly MAX_SIZE = 2_000;
   private cache = new Map<string, { data: GammaMarket; expiresAt: number }>();
 
   set(market: GammaMarket): void {
     this.cache.set(market.id, { data: market, expiresAt: Date.now() + MARKET_CACHE_TTL_MS });
+    // Evict expired + oldest if over max size
+    if (this.cache.size > MarketCache.MAX_SIZE) {
+      this.prune();
+      // If still over limit after pruning expired, evict oldest entries (FIFO)
+      if (this.cache.size > MarketCache.MAX_SIZE) {
+        const excess = this.cache.size - MarketCache.MAX_SIZE;
+        const iter = this.cache.keys();
+        for (let i = 0; i < excess; i++) {
+          const key = iter.next().value;
+          if (key !== undefined) this.cache.delete(key);
+        }
+      }
+    }
   }
 
   get(id: string): GammaMarket | null {
@@ -404,6 +418,8 @@ export class WhaleScanner {
   private static readonly MAX_BIG_TRADE_ADDRESSES = 5_000;
   private static readonly MAX_COPY_SIM_RESULTS = 2_000;
   private static readonly MAX_TRADES_PER_MARKET = 100;
+  private static readonly MAX_WALLET_BALANCES = 5_000;
+  private static readonly MAX_MARKETS_PER_ADDRESS = 50;
 
   private db: WhaleDB;
   private config: WhaleTrackingConfig;
@@ -980,9 +996,21 @@ export class WhaleScanner {
       this.globalAgg = new Map(sorted);
     }
 
-    // seenTradeHashes: clear when too large (dedup is best-effort)
+    // Per-address markets cap: trim to top markets by trade count
+    for (const [, agg] of this.globalAgg) {
+      if (agg.markets.size > WhaleScanner.MAX_MARKETS_PER_ADDRESS) {
+        const sorted = [...agg.markets.entries()]
+          .sort((a, b) => (b[1].buys.length + b[1].sells.length) - (a[1].buys.length + a[1].sells.length))
+          .slice(0, WhaleScanner.MAX_MARKETS_PER_ADDRESS);
+        agg.markets = new Map(sorted);
+      }
+    }
+
+    // seenTradeHashes: keep recent half instead of clearing entirely
     if (this.seenTradeHashes.size > WhaleScanner.MAX_SEEN_TRADE_HASHES) {
-      this.seenTradeHashes.clear();
+      const arr = [...this.seenTradeHashes];
+      const keepFrom = Math.floor(arr.length / 2);
+      this.seenTradeHashes = new Set(arr.slice(keepFrom));
     }
 
     // clusterSignals: keep most recent
@@ -1008,11 +1036,34 @@ export class WhaleScanner {
       }
     }
 
+    // walletBalances: cap size (FIFO eviction of oldest entries)
+    if (this.walletBalances.size > WhaleScanner.MAX_WALLET_BALANCES) {
+      const excess = this.walletBalances.size - WhaleScanner.MAX_WALLET_BALANCES;
+      const iter = this.walletBalances.keys();
+      for (let i = 0; i < excess; i++) {
+        const key = iter.next().value;
+        if (key !== undefined) this.walletBalances.delete(key);
+      }
+    }
+
+    // marketCache: prune expired entries
+    this.marketCache.prune();
+
     // requestTimestamps: keep only last 60s (in-place)
     const cutoff = Date.now() - 60_000;
     let pi = 0;
     while (pi < this.requestTimestamps.length && this.requestTimestamps[pi] < cutoff) pi++;
     if (pi > 0) this.requestTimestamps.splice(0, pi);
+
+    logger.info({
+      globalAgg: this.globalAgg.size,
+      seenTradeHashes: this.seenTradeHashes.size,
+      walletBalances: this.walletBalances.size,
+      marketCache: this.marketCache.size,
+      copySimResults: this.copySimResults.size,
+      bigTradeAddresses: this.bigTradeAddresses.size,
+      clusterSignals: this.clusterSignals.length,
+    }, 'WhaleScanner pruneMemory complete');
   }
 
   /* ━━━━━━━━━━━━━━ Step 1: Fetch ALL liquid markets (paginated) ━━━━━━━━━━━━━━ */

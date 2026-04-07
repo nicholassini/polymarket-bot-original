@@ -931,10 +931,11 @@ export class DashboardServer {
         }
       }
 
-      // Evict stale ssePayloadCache entries (users who disconnected)
+      // Evict stale ssePayloadCache entries (users who disconnected or stale >30s)
       const activeUserIds = new Set(this.sseClients.values());
-      for (const uid of this.ssePayloadCache.keys()) {
-        if (!activeUserIds.has(uid)) this.ssePayloadCache.delete(uid);
+      const staleCutoff = Date.now() - 30_000;
+      for (const [uid, entry] of this.ssePayloadCache) {
+        if (!activeUserIds.has(uid) || entry.ts < staleCutoff) this.ssePayloadCache.delete(uid);
       }
     }, 5000);
 
@@ -945,7 +946,7 @@ export class DashboardServer {
       const heap = (mem.heapUsed / 1024 / 1024).toFixed(0);
       const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(0);
       const ext = (mem.external / 1024 / 1024).toFixed(0);
-      logger.info({ rss: +rss, heapUsed: +heap, heapTotal: +heapTotal, external: +ext, sseClients: this.sseClients.size, sseCache: this.ssePayloadCache.size }, `MEMORY: RSS=${rss}MB heap=${heap}/${heapTotal}MB ext=${ext}MB clients=${this.sseClients.size}`);
+      logger.info({ rss: +rss, heapUsed: +heap, heapTotal: +heapTotal, external: +ext, sseClients: this.sseClients.size, sseCache: this.ssePayloadCache.size, walletNames: this.walletDisplayNames.size }, `MEMORY: RSS=${rss}MB heap=${heap}/${heapTotal}MB ext=${ext}MB clients=${this.sseClients.size}`);
     }, 60_000);
   }
 
@@ -1684,6 +1685,7 @@ export class DashboardServer {
         this.userDb.unassignWallet(walletId);
         this.userDb.removeWalletConfig(walletId);
         userWalletIds.delete(walletId);
+        this.walletDisplayNames.delete(walletId);
         this.userDb.trackEvent('wallet_delete', userId, { walletId });
         json(res, 200, { ok: true, message: `Wallet "${walletId}" removed` });
       } else {
