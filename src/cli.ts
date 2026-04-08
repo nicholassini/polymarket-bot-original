@@ -237,6 +237,29 @@ program
     engine.start();
 
     writeState({ status: 'running', startedAt: new Date().toISOString() });
+
+    /* ── Graceful shutdown on SIGTERM / SIGINT ── */
+    let shuttingDown = false;
+    const gracefulShutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      logger.info({ signal }, `Received ${signal}, shutting down gracefully…`);
+
+      // 1. Stop accepting new trades
+      engine.stop();
+
+      // 2. Stop dashboard server (close SSE clients, stop listening)
+      dashboardServer.stop();
+
+      // 3. Flush state
+      writeState({ status: 'stopped', stoppedAt: new Date().toISOString(), reason: signal });
+
+      logger.info('Graceful shutdown complete');
+      process.exit(0);
+    };
+
+    process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); });
+    process.on('SIGINT', () => { gracefulShutdown('SIGINT'); });
   });
 
 program

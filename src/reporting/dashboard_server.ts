@@ -680,6 +680,68 @@ function getStrategyCatalog(): StrategyCatalogEntry[] {
 /* ──────────────────────────────────────────────────────────────
    Helpers
    ────────────────────────────────────────────────────────────── */
+
+/* ─── Security headers applied to every response ─── */
+const SECURITY_HEADERS: Record<string, string> = {
+  'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'X-XSS-Protection': '1; mode=block',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+};
+
+function applySecurityHeaders(res: http.ServerResponse): void {
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+    res.setHeader(k, v);
+  }
+}
+
+/* ─── In-memory sliding-window rate limiter ─── */
+interface RateBucket { count: number; resetAt: number; }
+const rateBuckets = new Map<string, RateBucket>();
+const RATE_LIMITS: Record<string, { max: number; windowMs: number }> = {
+  '/api/auth/login':  { max: 10, windowMs: 60_000 },
+  '/api/auth/signup': { max: 5,  windowMs: 60_000 },
+  'default':          { max: 120, windowMs: 60_000 },
+};
+const RATE_LIMIT_CLEANUP_INTERVAL = 300_000; // 5 min
+let lastRateCleanup = Date.now();
+
+function getRateKey(ip: string, path: string): string {
+  // Use specific limits for auth endpoints, generic for everything else
+  if (RATE_LIMITS[path]) return `${ip}:${path}`;
+  return `${ip}:default`;
+}
+
+function isRateLimited(ip: string, path: string): boolean {
+  const now = Date.now();
+  // Periodic cleanup of expired buckets
+  if (now - lastRateCleanup > RATE_LIMIT_CLEANUP_INTERVAL) {
+    lastRateCleanup = now;
+    for (const [k, b] of rateBuckets) {
+      if (b.resetAt <= now) rateBuckets.delete(k);
+    }
+  }
+
+  const key = getRateKey(ip, path);
+  const limit = RATE_LIMITS[path] ?? RATE_LIMITS['default'];
+  const bucket = rateBuckets.get(key);
+
+  if (!bucket || bucket.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + limit.windowMs });
+    return false;
+  }
+
+  bucket.count++;
+  return bucket.count > limit.max;
+}
+
+/* ─── Correlation ID generator ─── */
+let reqCounter = 0;
+function nextRequestId(): string {
+  return `req-${Date.now().toString(36)}-${(++reqCounter).toString(36)}`;
+}
 const MAX_BODY_BYTES = 1_048_576; // 1 MB
 function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -711,7 +773,8 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    ...SECURITY_HEADERS,
   });
   res.end(payload);
 }
@@ -728,6 +791,7 @@ function sendHtml(
 ): void {
   const headers: Record<string, string> = {
     'Content-Type': 'text/html; charset=utf-8',
+    ...SECURITY_HEADERS,
   };
   if (maxAge > 0) {
     headers['Cache-Control'] = `public, max-age=${maxAge}, stale-while-revalidate=${maxAge * 2}`;
@@ -745,6 +809,7 @@ function sendText(
 ): void {
   const headers: Record<string, string> = {
     'Content-Type': contentType,
+    ...SECURITY_HEADERS,
   };
   if (maxAge > 0) headers['Cache-Control'] = `public, max-age=${maxAge}`;
   res.writeHead(200, headers);
@@ -874,14 +939,41 @@ export class DashboardServer {
       .map((r) => ({ instance: r.strategy as CopyTradeStrategy, walletId: r.walletId }));
   }
 
+  private startedAt = Date.now();
+
   start(): void {
     if (this.server) return;
 
     this.server = http.createServer(async (req, res) => {
       const reqStart = Date.now();
+      const reqId = nextRequestId();
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       const method = req.method ?? 'GET';
       const path = url.pathname;
+
+      // Attach correlation ID to every response
+      res.setHeader('X-Request-Id', reqId);
+
+      // Apply security headers early (covers error paths too)
+      applySecurityHeaders(res);
+
+      /* ── Health check endpoints (before auth/rate-limiting) ── */
+      if (path === '/health') {
+        json(res, 200, { status: 'ok', uptime: Math.floor((Date.now() - this.startedAt) / 1000) });
+        return;
+      }
+      if (path === '/ready') {
+        const ready = !!this.engine;
+        json(res, ready ? 200 : 503, { status: ready ? 'ready' : 'starting', engine: !!this.engine });
+        return;
+      }
+
+      /* ── Rate limiting ── */
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
+      if (isRateLimited(clientIp, path)) {
+        json(res, 429, { ok: false, error: 'Too many requests. Please slow down.' });
+        return;
+      }
 
       /* preflight */
       if (method === 'OPTIONS') {
@@ -893,14 +985,16 @@ export class DashboardServer {
         await this.route(req, res, url);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        logger.error({ err: msg }, 'Dashboard request error');
-        json(res, 500, { ok: false, error: 'Internal server error' });
+        // Map known errors to proper status codes
+        const status = msg === 'Payload too large' ? 413 : 500;
+        logger.error({ err: msg, reqId, method, path }, 'Dashboard request error');
+        json(res, status, { ok: false, error: status === 500 ? 'Internal server error' : msg });
       }
 
       // Log slow requests (>2s) always, others every 60s
       const elapsed = Date.now() - reqStart;
       if (elapsed > 2000) {
-        logger.warn({ method, path, elapsed }, `SLOW REQUEST: ${method} ${path} took ${elapsed}ms`);
+        logger.warn({ method, path, elapsed, reqId }, `SLOW REQUEST: ${method} ${path} took ${elapsed}ms`);
       }
     });
 
