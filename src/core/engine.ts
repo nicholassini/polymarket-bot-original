@@ -132,18 +132,19 @@ export class Engine {
     this.runners.push({ strategy, walletId, config: cfg });
 
     // Back-fill cached market data so the strategy can evaluate immediately
-    for (const market of this.stream.getAllMarkets()) {
+    this.stream.forEachMarket((market) => {
       strategy.onMarketUpdate(market);
-    }
+    });
 
+    const cachedCount = this.stream.getMarketCount();
     logger.info(
-      { walletId, strategy: strategyKey, cachedMarkets: this.stream.getAllMarkets().length },
+      { walletId, strategy: strategyKey, cachedMarkets: cachedCount },
       `Runtime runner added for wallet ${walletId} (${strategyKey})`,
     );
     consoleLog.success('WALLET', `Runtime runner added: ${walletId} → ${strategyKey}`, {
       walletId,
       strategy: strategyKey,
-      cachedMarkets: this.stream.getAllMarkets().length,
+      cachedMarkets: cachedCount,
     });
     return true;
   }
@@ -230,7 +231,7 @@ export class Engine {
 
     // Log a periodic scan summary every 12 ticks (~60 s at 5 s interval)
     if (this.tickCount % 12 === 0) {
-      consoleLog.debug('ENGINE', `Tick #${this.tickCount} — ${this.runners.length} runners, ${this.stream.getAllMarkets().length} cached markets, ${this.marketUpdateCount} updates since last summary`);
+      consoleLog.debug('ENGINE', `Tick #${this.tickCount} — ${this.runners.length} runners, ${this.stream.getMarketCount()} cached markets, ${this.marketUpdateCount} updates since last summary`);
       this.marketUpdateCount = 0;
     }
 

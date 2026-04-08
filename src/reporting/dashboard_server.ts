@@ -842,9 +842,9 @@ export class DashboardServer {
   private getLiveMarketPrices(): Map<string, number> {
     const prices = new Map<string, number>();
     if (this.engine) {
-      for (const m of this.engine.getStream().getAllMarkets()) {
+      this.engine.getStream().forEachMarket((m) => {
         prices.set(m.marketId, m.midPrice);
-      }
+      });
     }
     return prices;
   }
@@ -898,13 +898,18 @@ export class DashboardServer {
     });
 
     // Broadcast dashboard data to SSE clients (per-user scoped)
-    // Cache payloads per-userId to avoid redundant buildDashboardPayload + JSON.stringify
+    // Build payload once per unique userId, send to all their SSE tabs
     this.sseInterval = setInterval(() => {
-      if (this.sseClients.size === 0) return;
+      if (this.sseClients.size === 0) {
+        // No clients → clear any stale payload cache
+        if (this.ssePayloadCache.size > 0) this.ssePayloadCache.clear();
+        return;
+      }
       const allWallets = this.walletManager.listWallets();
       const allTrades = this.walletManager.getAllTradeHistories();
       const prices = this.getLiveMarketPrices();
       const paused = this.engine?.getPausedWallets();
+      // Ephemeral per-tick cache — NOT stored beyond this tick
       const jsonCache = new Map<string, string>(); // userId → serialised payload
 
       for (const [client, userId] of this.sseClients) {
@@ -916,14 +921,14 @@ export class DashboardServer {
             const userTrades = new Map<string, readonly import('../types').TradeRecord[]>();
             for (const [wid, trades] of allTrades) {
               if (userWalletIds.has(wid)) {
-                // Cap trade history to last 500 to avoid massive payloads
-                userTrades.set(wid, trades.length > 500 ? trades.slice(-500) : trades);
+                // Cap trade history to last 200 to keep payloads small (~30KB vs 75KB)
+                userTrades.set(wid, trades.length > 200 ? trades.slice(-200) : trades);
               }
             }
             const payload = buildDashboardPayload(userWallets, userTrades, prices, paused, this.walletDisplayNames);
             jsonStr = JSON.stringify(payload);
             jsonCache.set(userId, jsonStr);
-            // Populate /api/data cache so it can reuse instead of rebuilding
+            // Cache for /api/data reuse (short-lived — evicted below)
             this.ssePayloadCache.set(userId, { json: jsonStr, ts: Date.now() });
           }
           client.write(`event: dashboard\ndata: ${jsonStr}\n\n`);
@@ -931,12 +936,14 @@ export class DashboardServer {
           this.sseClients.delete(client);
         }
       }
+      // jsonCache goes out of scope → GC'd
 
-      // Evict stale ssePayloadCache entries (users who disconnected or stale >30s)
-      const activeUserIds = new Set(this.sseClients.values());
-      const staleCutoff = Date.now() - 30_000;
+      // Evict ALL ssePayloadCache entries that are >10s old.
+      // Active users get refreshed every 5s, so they stay.  Disconnected users
+      // are cleaned up within 10s instead of lingering for 30s.
+      const staleCutoff = Date.now() - 10_000;
       for (const [uid, entry] of this.ssePayloadCache) {
-        if (!activeUserIds.has(uid) || entry.ts < staleCutoff) this.ssePayloadCache.delete(uid);
+        if (entry.ts < staleCutoff) this.ssePayloadCache.delete(uid);
       }
     }, 5000);
 
@@ -964,6 +971,7 @@ export class DashboardServer {
       try { client.end(); } catch { /* ignore */ }
     }
     this.sseClients.clear();
+    this.ssePayloadCache.clear();
     if (!this.server) return;
     this.server.close();
     this.server = undefined;
@@ -2192,7 +2200,12 @@ export class DashboardServer {
       if (!this.engine) {
         json(res, 503, { ok: false, error: 'Engine not available' });
       } else {
-        json(res, 200, this.engine.getStream().getAllMarkets());
+        // Paginate to avoid serialising 2000+ MarketData objects at once
+        const qLimit = Math.min(Number(url.searchParams.get('limit')) || 100, 200);
+        const qOffset = Math.max(Number(url.searchParams.get('offset')) || 0, 0);
+        const allMarkets = this.engine.getStream().getAllMarkets();
+        const page = allMarkets.slice(qOffset, qOffset + qLimit);
+        json(res, 200, { total: allMarkets.length, offset: qOffset, limit: qLimit, markets: page });
       }
       return;
     }

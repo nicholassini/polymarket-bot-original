@@ -51,8 +51,10 @@ export interface ConsoleEntry {
   data?: Record<string, unknown>;
 }
 
-const MAX_ENTRIES = 2000;
+const MAX_ENTRIES = 500;
 const MAX_LOGS_PER_SEC = 50; // Rate-limit to avoid Railway's 500/s ceiling
+const MAX_DATA_KEYS = 8;     // Max keys per data object
+const MAX_DATA_STRING_LEN = 200; // Truncate string values in data
 
 /** Categories that contain no user-specific data and can be seen by anyone */
 const GLOBAL_CATEGORIES = new Set<LogCategory>(['SCAN', 'ENGINE', 'SYSTEM']);
@@ -118,7 +120,7 @@ class ConsoleLogSingleton extends EventEmitter {
       level,
       category,
       message,
-      data,
+      data: data ? this.truncateData(data) : undefined,
     };
 
     // Ring buffer
@@ -228,6 +230,7 @@ class ConsoleLogSingleton extends EventEmitter {
   }
 
   private broadcast(entry: ConsoleEntry): void {
+    if (this.sseClients.size === 0) return; // skip stringify when nobody's listening
     const payload = `data: ${JSON.stringify(entry)}\n\n`;
     for (const [client, info] of this.sseClients) {
       try {
@@ -238,6 +241,24 @@ class ConsoleLogSingleton extends EventEmitter {
         this.sseClients.delete(client);
       }
     }
+  }
+
+  /** Truncate data objects to prevent large strings/arrays in the ring buffer */
+  private truncateData(data: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    let keyCount = 0;
+    for (const [k, v] of Object.entries(data)) {
+      if (++keyCount > MAX_DATA_KEYS) break;
+      if (typeof v === 'string') {
+        out[k] = v.length > MAX_DATA_STRING_LEN ? v.slice(0, MAX_DATA_STRING_LEN) + '…' : v;
+      } else if (Array.isArray(v)) {
+        // Keep at most 5 elements, and only primitives / shallow objects
+        out[k] = v.slice(0, 5);
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
   }
 }
 

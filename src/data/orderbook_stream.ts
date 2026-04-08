@@ -67,6 +67,16 @@ export class OrderbookStream extends EventEmitter {
     return [...this.cache.values()];
   }
 
+  /** Iterate cached markets without creating a copy (zero-alloc). */
+  forEachMarket(fn: (m: MarketData) => void): void {
+    for (const m of this.cache.values()) fn(m);
+  }
+
+  /** Number of cached markets (avoids array copy just for .length). */
+  getMarketCount(): number {
+    return this.cache.size;
+  }
+
   /** Return a snapshot of persistent seen markets (for dashboards/diagnostics). */
   getSeenMarkets(): Array<{ marketId: string; firstSeenAt: string; lastSeenAt: string }> {
     return [...this.seenMarkets.entries()].map(([marketId, entry]) => ({
