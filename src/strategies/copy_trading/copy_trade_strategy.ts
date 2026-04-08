@@ -341,6 +341,20 @@ export class CopyTradeStrategy extends BaseStrategy {
     for (const wt of whaleTrades) {
       this.recentWhaleMap.set(wt.marketId, wt.whaleAddress);
     }
+    // Cap recentWhaleMap to prevent unbounded growth between ticks
+    if (this.recentWhaleMap.size > 1000) {
+      const excess = this.recentWhaleMap.size - 1000;
+      const iter = this.recentWhaleMap.keys();
+      for (let i = 0; i < excess; i++) iter.next();
+      // Delete oldest entries (first inserted)
+      const toDelete: string[] = [];
+      let c = 0;
+      for (const k of this.recentWhaleMap.keys()) {
+        if (c++ >= excess) break;
+        toDelete.push(k);
+      }
+      for (const k of toDelete) this.recentWhaleMap.delete(k);
+    }
 
     for (let i = 0; i < signals.length && orders.length < slotsAvailable; i++) {
       const signal = signals[i];

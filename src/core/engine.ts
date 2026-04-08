@@ -158,6 +158,7 @@ export class Engine {
 
     const runner = this.runners[idx];
     runner.strategy.shutdown();
+    this.orderRouter.removeWalletState(walletId);
     this.runners.splice(idx, 1);
     logger.info({ walletId }, `Runtime runner removed for wallet ${walletId}`);
     consoleLog.warn('WALLET', `Runner removed: ${walletId} (${runner.strategy.name})`, {

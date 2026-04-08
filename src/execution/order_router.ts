@@ -42,4 +42,9 @@ export class OrderRouter {
     await this.tradeExecutor.execute(order, wallet);
     return true;
   }
+
+  /** Clean up per-wallet state in the risk engine when a wallet is removed */
+  removeWalletState(walletId: string): void {
+    this.riskEngine.removeWallet(walletId);
+  }
 }
