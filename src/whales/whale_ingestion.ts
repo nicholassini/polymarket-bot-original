@@ -381,8 +381,10 @@ export class WhaleIngestion {
           await this.sleep(Math.pow(2, attempt) * 1000);
           continue;
         }
-        // 4xx (non-429) — don't retry
-        logger.error({ status: res.status, url: url.replace(/maker_address=0x[a-fA-F0-9]+/, 'maker_address=REDACTED') }, 'CLOB request failed');
+        // 4xx (non-429) — don't retry. Throttle 401 logs (auth errors are expected without API keys)
+        if (res.status !== 401) {
+          logger.error({ status: res.status, url: url.replace(/maker_address=0x[a-fA-F0-9]+/, 'maker_address=REDACTED') }, 'CLOB request failed');
+        }
         return null;
       } catch (err) {
         if (attempt === maxRetries) {

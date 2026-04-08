@@ -32,7 +32,7 @@ export class OrderbookStream extends EventEmitter {
     seenCachePath = path.join(process.cwd(), '.cache', 'market_seen.json'),
   ) {
     super();
-    this.fetcher = new MarketFetcher(gammaApi);
+    this.fetcher = new MarketFetcher(gammaApi, 1000);
     this.pollMs = pollMs;
     this.seenCachePath = seenCachePath;
     this.loadSeenCache();

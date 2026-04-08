@@ -17,7 +17,7 @@ strategy_config:
   filtered_high_prob_convergence:
     enabled: true
     # ── Market selection filters ──
-    min_liquidity_usd: 5000
+    min_liquidity_usd: 2000
     min_prob: 0.55
     max_prob: 0.96
     max_spread_bps: 300
