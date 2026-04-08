@@ -1924,6 +1924,8 @@ export class WhaleScanner {
         const res = await fetch(url, { signal: controller.signal });
         clearTimeout(timer);
         if (res.ok) return res;
+        // Drain response body to prevent TCP socket leak
+        await res.text().catch(() => {});
         if (res.status === 429) {
           const retryAfter = parseInt(res.headers.get('retry-after') || '5', 10);
           await this.sleep(retryAfter * 1000);
@@ -2578,6 +2580,8 @@ export class WhaleScanner {
             const balance = Number(raw) / 1_000_000;
             this.walletBalances.set(whale.address, balance);
           }
+        } else {
+          await res.text().catch(() => {}); // drain socket
         }
       } catch {
         /* Non-fatal: RPC may be unavailable */

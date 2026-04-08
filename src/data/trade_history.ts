@@ -40,6 +40,7 @@ export class TradeHistory {
       }
       if (!response.ok) {
         logger.warn({ status: response.status, clobTokenId }, 'CLOB prices-history request failed');
+        await response.text().catch(() => {}); // drain socket
         return [];
       }
 

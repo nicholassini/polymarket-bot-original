@@ -79,6 +79,7 @@ export class MarketFetcher {
 
       if (!response.ok) {
         logger.error({ status: response.status, offset }, 'Gamma API page request failed');
+        await response.text().catch(() => {}); // drain socket to prevent leak
         break;
       }
 

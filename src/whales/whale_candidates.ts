@@ -132,6 +132,7 @@ export class WhaleCandidates {
           return Array.isArray(data) ? data : (data.trades ?? []);
         }
         /* CLOB auth failed (401) or other error — fall through to data-api */
+        await res.text().catch(() => {}); // drain socket to prevent leak
         logger.debug({ status: res.status }, 'CLOB trades unavailable, falling back to data-api');
       } finally {
         clearTimeout(timer);
@@ -165,7 +166,10 @@ export class WhaleCandidates {
       } finally {
         clearTimeout(mt);
       }
-      if (!marketsRes.ok) return [];
+      if (!marketsRes.ok) {
+        await marketsRes.text().catch(() => {}); // drain socket
+        return [];
+      }
 
       interface GammaMarketSlim {
         conditionId?: string;
@@ -186,7 +190,10 @@ export class WhaleCandidates {
           } finally {
             clearTimeout(tt);
           }
-          if (!tradesRes.ok) continue;
+          if (!tradesRes.ok) {
+            await tradesRes.text().catch(() => {}); // drain socket
+            continue;
+          }
 
           interface DataApiTrade {
             transactionHash?: string;

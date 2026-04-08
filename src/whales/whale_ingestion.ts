@@ -368,6 +368,8 @@ export class WhaleIngestion {
           clearTimeout(timer);
         }
         if (res.ok) return res;
+        // Drain response body to prevent TCP socket leak
+        await res.text().catch(() => {});
         if (res.status === 429) {
           const retryAfter = parseInt(res.headers.get('retry-after') || '5', 10);
           logger.warn({ retryAfter, attempt }, 'Rate limited, backing off');
