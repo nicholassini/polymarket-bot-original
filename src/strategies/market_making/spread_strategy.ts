@@ -62,6 +62,11 @@ export class SpreadStrategy extends BaseStrategy {
     this.priceHistory.set(data.marketId, hist);
   }
 
+  protected override onMarketEvicted(marketId: string): void {
+    this.priceHistory.delete(marketId);
+    this.inventory.delete(marketId);
+  }
+
   generateSignals(): Signal[] {
     const signals: Signal[] = [];
     let quotedMarkets = 0;

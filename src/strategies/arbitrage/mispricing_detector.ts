@@ -75,6 +75,11 @@ export class MispricingArbitrageStrategy extends BaseStrategy {
     this.volumeHistory.set(data.marketId, vols);
   }
 
+  protected override onMarketEvicted(marketId: string): void {
+    this.priceSnapshots.delete(marketId);
+    this.volumeHistory.delete(marketId);
+  }
+
   /* ── Signal generation ──────────────────────────────────────── */
   generateSignals(): Signal[] {
     const signals: Signal[] = [];

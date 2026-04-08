@@ -99,6 +99,11 @@ export class MomentumStrategy extends BaseStrategy {
     this.priceHistory.set(data.marketId, hist);
   }
 
+  protected override onMarketEvicted(marketId: string): void {
+    this.priceHistory.delete(marketId);
+    this.signalCooldown.delete(marketId);
+  }
+
   /* ── Position tracking via engine callback ── */
   override notifyFill(order: OrderRequest): void {
     super.notifyFill(order);

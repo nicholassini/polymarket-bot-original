@@ -53,9 +53,22 @@ export abstract class BaseStrategy implements StrategyInterface {
       const iter = this.markets.keys();
       for (let i = 0; i < excess; i++) {
         const key = iter.next().value;
-        if (key !== undefined) this.markets.delete(key);
+        if (key !== undefined) {
+          this.markets.delete(key);
+          this.onMarketEvicted(key);
+        }
       }
     }
+  }
+
+  /**
+   * Called when a market is evicted from the base `markets` cache.
+   * Override in subclasses to clean up strategy-specific maps keyed by
+   * marketId (e.g. priceHistory, volumeHistory) so they don't grow
+   * unbounded even after the base cache evicts the market.
+   */
+  protected onMarketEvicted(_marketId: string): void {
+    // Default no-op; subclasses override
   }
 
   onTimer(): void {

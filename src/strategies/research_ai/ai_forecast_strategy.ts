@@ -83,6 +83,11 @@ export class AiForecastStrategy extends BaseStrategy {
     this.volumeHistory.set(data.marketId, vols);
   }
 
+  protected override onMarketEvicted(marketId: string): void {
+    this.priceHistory.delete(marketId);
+    this.volumeHistory.delete(marketId);
+  }
+
   /* ── Signal generation ──────────────────────────────────────── */
   generateSignals(): Signal[] {
     const signals: Signal[] = [];

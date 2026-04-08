@@ -171,6 +171,19 @@ export class FilteredHighProbConvergenceStrategy extends BaseStrategy {
     this.volumeCache.set(data.marketId, volHistory);
   }
 
+  protected override onMarketEvicted(marketId: string): void {
+    this.volumeCache.delete(marketId);
+    // priceCache is keyed by clobTokenId — cap it independently
+    if (this.priceCache.size > 1_500) {
+      const excess = this.priceCache.size - 1_000;
+      const iter = this.priceCache.keys();
+      for (let i = 0; i < excess; i++) {
+        const k = iter.next().value;
+        if (k !== undefined) this.priceCache.delete(k);
+      }
+    }
+  }
+
   /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      2. SIGNAL GENERATION — apply all 8 filters
      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */

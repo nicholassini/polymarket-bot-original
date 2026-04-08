@@ -212,6 +212,13 @@ export class UserDB {
     const rows = this.db.prepare('SELECT wallet_id FROM user_wallets WHERE user_id = ?').all(userId) as any[];
     const ids = rows.map(r => r.wallet_id);
     this.walletIdCache.set(userId, { ids, ts: Date.now() });
+    // Prune stale entries when cache grows beyond 500
+    if (this.walletIdCache.size > 500) {
+      const now = Date.now();
+      for (const [uid, entry] of this.walletIdCache) {
+        if (now - entry.ts > UserDB.WALLET_CACHE_TTL) this.walletIdCache.delete(uid);
+      }
+    }
     return ids;
   }
 

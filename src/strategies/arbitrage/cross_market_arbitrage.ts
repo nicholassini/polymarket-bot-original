@@ -60,6 +60,10 @@ export class CrossMarketArbitrageStrategy extends BaseStrategy {
     this.priceHistory.set(data.marketId, hist);
   }
 
+  protected override onMarketEvicted(marketId: string): void {
+    this.priceHistory.delete(marketId);
+  }
+
   /* ── Signal generation ──────────────────────────────────────── */
   generateSignals(): Signal[] {
     const signals: Signal[] = [];
