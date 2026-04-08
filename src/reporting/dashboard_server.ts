@@ -680,10 +680,20 @@ function getStrategyCatalog(): StrategyCatalogEntry[] {
 /* ──────────────────────────────────────────────────────────────
    Helpers
    ────────────────────────────────────────────────────────────── */
+const MAX_BODY_BYTES = 1_048_576; // 1 MB
 function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (chunk: Buffer) => (data += chunk.toString()));
+    let bytes = 0;
+    req.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error('Payload too large'));
+        return;
+      }
+      data += chunk.toString();
+    });
     req.on('end', () => {
       try {
         resolve(JSON.parse(data) as Record<string, unknown>);
@@ -750,6 +760,13 @@ function getCachedHtml(key: string, generate: () => string): string {
   const now = Date.now();
   const cached = pageCache.get(key);
   if (cached && now - cached.ts < PAGE_CACHE_TTL) return cached.html;
+  // Evict expired entries to prevent unbounded growth
+  if (pageCache.size > 20) {
+    const cutoff = now - PAGE_CACHE_TTL * 2;
+    for (const [k, v] of pageCache) {
+      if (v.ts < cutoff) pageCache.delete(k);
+    }
+  }
   const html = generate();
   pageCache.set(key, { html, ts: now });
   return html;
@@ -889,6 +906,7 @@ export class DashboardServer {
 
     this.server.keepAliveTimeout = 65_000;  // Keep connections alive (avoids TCP handshake per request)
     this.server.headersTimeout = 66_000;
+    this.server.requestTimeout = 30_000;  // Kill stalled requests after 30s
 
     this.server.listen(this.port, () => {
       logger.info(
@@ -1791,6 +1809,15 @@ export class DashboardServer {
         const name = body.displayName.trim();
         if (name) {
           this.walletDisplayNames.set(walletId, name);
+          // Cap display names to prevent unbounded growth
+          if (this.walletDisplayNames.size > 5000) {
+            const toDelete: string[] = [];
+            for (const k of this.walletDisplayNames.keys()) {
+              if (k !== walletId) toDelete.push(k);
+              if (toDelete.length >= 1000) break;
+            }
+            for (const k of toDelete) this.walletDisplayNames.delete(k);
+          }
           if (typeof wallet.setDisplayName === 'function') wallet.setDisplayName(name);
           changes.push(`displayName → "${name}"`);
         }
