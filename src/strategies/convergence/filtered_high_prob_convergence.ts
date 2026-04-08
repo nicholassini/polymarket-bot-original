@@ -246,7 +246,7 @@ export class FilteredHighProbConvergenceStrategy extends BaseStrategy {
 
       /* Rate-limit check */
       if (!this.checkRateLimit()) {
-        logger.warn({ strategy: this.name }, 'Order rate limit reached – pausing entries');
+        logger.debug({ strategy: this.name }, 'Order rate limit reached – pausing entries');
         break;
       }
 

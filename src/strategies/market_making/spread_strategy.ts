@@ -241,7 +241,7 @@ export class SpreadStrategy extends BaseStrategy {
       }
 
       if (exitReason && exitSize > 0) {
-        logger.info(
+        logger.debug(
           { strategy: this.name, marketId, reason: exitReason, size: exitSize, inventory: netYes },
           `MM: exiting inventory — ${exitReason}`,
         );

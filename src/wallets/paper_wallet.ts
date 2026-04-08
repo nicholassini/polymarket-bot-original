@@ -130,7 +130,7 @@ export class PaperWallet {
       this.tradingDb.saveWalletState(this.state.walletId, this.state.availableBalance, this.state.realizedPnl, this.state.capitalAllocated);
     }
 
-    logger.info(
+    logger.debug(
       {
         walletId: this.state.walletId,
         marketId: fill.marketId,
