@@ -64,26 +64,26 @@ export class MarketFetcher {
     const all: GammaMarket[] = [];
     let offset = 0;
     const pageSize = MarketFetcher.PAGE_SIZE;
+    let consecutiveFailures = 0;
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const url = `${this.gammaApi}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}&order=volume24hr&ascending=false`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10_000);
-      let response: Response;
-      try {
-        response = await fetch(url, { signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
+
+      const page = await this.fetchPageWithRetry(url, offset);
+      if (page === null) {
+        consecutiveFailures++;
+        // After 3 consecutive failures, stop pagination but return what we have
+        if (consecutiveFailures >= 3) {
+          logger.warn({ offset, collected: all.length }, 'Gamma API: 3 consecutive page failures, returning partial results');
+          break;
+        }
+        // Skip this page and try the next offset
+        offset += pageSize;
+        continue;
       }
 
-      if (!response.ok) {
-        logger.error({ status: response.status, offset }, 'Gamma API page request failed');
-        await response.text().catch(() => {}); // drain socket to prevent leak
-        break;
-      }
-
-      const page: GammaMarket[] = await response.json() as GammaMarket[];
+      consecutiveFailures = 0;
       if (page.length === 0) break;
 
       all.push(...page);
@@ -100,6 +100,55 @@ export class MarketFetcher {
     }
 
     return all;
+  }
+
+  /** Fetch a single page with up to 2 retries and exponential backoff. */
+  private async fetchPageWithRetry(url: string, offset: number): Promise<GammaMarket[] | null> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10_000);
+        let response: Response;
+        try {
+          response = await fetch(url, { signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
+
+        if (response.ok) {
+          return await response.json() as GammaMarket[];
+        }
+
+        await response.text().catch(() => {}); // drain socket
+
+        if (response.status === 429) {
+          const retryAfter = parseInt(response.headers.get('retry-after') || '3', 10);
+          logger.warn({ status: 429, offset, attempt }, `Gamma API rate limited, waiting ${retryAfter}s`);
+          await new Promise((r) => setTimeout(r, retryAfter * 1000));
+          continue;
+        }
+        if (response.status >= 500) {
+          const delay = Math.pow(2, attempt) * 1000;
+          logger.warn({ status: response.status, offset, attempt }, `Gamma API server error, retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+
+        // 4xx (not 429) — don't retry
+        logger.error({ status: response.status, offset }, 'Gamma API page request failed (client error)');
+        return null;
+      } catch (err) {
+        if (attempt < 2) {
+          const delay = Math.pow(2, attempt) * 1000;
+          logger.warn({ err, offset, attempt }, `Gamma API fetch error, retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+        } else {
+          logger.error({ err, offset }, 'Gamma API page request failed after retries');
+          return null;
+        }
+      }
+    }
+    return null;
   }
 
   /* ── Parse raw Gamma response into MarketData ── */

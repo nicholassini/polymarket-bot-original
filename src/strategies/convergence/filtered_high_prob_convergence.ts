@@ -195,10 +195,14 @@ export class FilteredHighProbConvergenceStrategy extends BaseStrategy {
 
     const signals: Signal[] = [];
     let evaluated = 0;
+    const rejections: Record<string, number> = {
+      liquidity: 0, probBand: 0, spread: 0, timeToRes: 0,
+      antiChase: 0, flow: 0, volumeTrend: 0, cluster: 0,
+    };
 
     for (const [marketId, market] of this.markets) {
       evaluated++;
-      const result = this.evaluateMarket(marketId, market);
+      const result = this.evaluateMarket(marketId, market, rejections);
       if (result) signals.push(result);
     }
 
@@ -206,9 +210,13 @@ export class FilteredHighProbConvergenceStrategy extends BaseStrategy {
     signals.sort((a, b) => b.confidence - a.confidence);
 
     if (evaluated > 0) {
+      const rejStr = Object.entries(rejections)
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ');
       logger.info(
-        { strategy: this.name, evaluated, passed: signals.length },
-        `Convergence scan: ${signals.length}/${evaluated} markets passed all 8 filters`,
+        { strategy: this.name, evaluated, passed: signals.length, rejections },
+        `Convergence scan: ${signals.length}/${evaluated} markets passed all 8 filters [${rejStr}]`,
       );
     }
 
@@ -508,7 +516,7 @@ export class FilteredHighProbConvergenceStrategy extends BaseStrategy {
   /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
      FILTER PIPELINE — 8 filters
      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-  private evaluateMarket(marketId: string, m: MarketData): Signal | null {
+  private evaluateMarket(marketId: string, m: MarketData, rejections?: Record<string, number>): Signal | null {
     const filterNames = [
       'liquidity', 'probBand', 'spread', 'timeToRes',
       'antiChase', 'flow', 'volumeTrend', 'cluster',
@@ -527,6 +535,7 @@ export class FilteredHighProbConvergenceStrategy extends BaseStrategy {
     for (let i = 0; i < filters.length; i++) {
       const f = filters[i];
       if (!f.pass) {
+        if (rejections) rejections[filterNames[i]] = (rejections[filterNames[i]] ?? 0) + 1;
         logger.debug(
           { strategy: this.name, marketId, filter: filterNames[i], reason: f.reason },
           `Filter ${filterNames[i]} rejected market`,
