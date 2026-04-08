@@ -1927,7 +1927,7 @@ export class WhaleScanner {
         // Drain response body to prevent TCP socket leak
         await res.text().catch(() => {});
         if (res.status === 429) {
-          const retryAfter = parseInt(res.headers.get('retry-after') || '5', 10);
+          const retryAfter = Math.max(3, parseInt(res.headers.get('retry-after') || '5', 10));
           await this.sleep(retryAfter * 1000);
           continue;
         }

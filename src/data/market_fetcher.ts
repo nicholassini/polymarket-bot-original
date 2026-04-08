@@ -70,6 +70,9 @@ export class MarketFetcher {
     while (true) {
       const url = `${this.gammaApi}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}&order=volume24hr&ascending=false`;
 
+      // Throttle pagination to avoid rate-limiting
+      if (offset > 0) await new Promise((r) => setTimeout(r, 500));
+
       const page = await this.fetchPageWithRetry(url, offset);
       if (page === null) {
         consecutiveFailures++;
@@ -122,7 +125,7 @@ export class MarketFetcher {
         await response.text().catch(() => {}); // drain socket
 
         if (response.status === 429) {
-          const retryAfter = parseInt(response.headers.get('retry-after') || '3', 10);
+          const retryAfter = Math.max(3, parseInt(response.headers.get('retry-after') || '5', 10));
           logger.warn({ status: 429, offset, attempt }, `Gamma API rate limited, waiting ${retryAfter}s`);
           await new Promise((r) => setTimeout(r, retryAfter * 1000));
           continue;
