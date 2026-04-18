@@ -968,6 +968,54 @@ export class DashboardServer {
         return;
       }
 
+      /* ── /healthz — legacy health endpoint (no auth required) ── */
+      if (path === '/healthz' && method === 'GET') {
+        const wallets = this.walletManager.listWallets();
+        const totalFeesAccrued = wallets.reduce((sum, w) => {
+          const wallet = this.walletManager.getWallet(w.walletId);
+          return sum + ((wallet && typeof (wallet as { getTotalFeesAccrued?: () => number }).getTotalFeesAccrued === 'function')
+            ? ((wallet as unknown as { getTotalFeesAccrued(): number }).getTotalFeesAccrued())
+            : 0);
+        }, 0);
+        const walletFees = wallets.map((w) => {
+          const wallet = this.walletManager.getWallet(w.walletId);
+          const fees = (wallet && typeof (wallet as { getTotalFeesAccrued?: () => number }).getTotalFeesAccrued === 'function')
+            ? ((wallet as unknown as { getTotalFeesAccrued(): number }).getTotalFeesAccrued())
+            : 0;
+          return { walletId: w.walletId, totalFeesAccrued: fees };
+        });
+        json(res, 200, {
+          ok: true,
+          activeWallets: wallets.length,
+          liveTradingEnabled: wallets.some((w) => w.mode === 'LIVE'),
+          totalFeesAccrued,
+          walletFees,
+          uptime: Math.floor((Date.now() - this.startedAt) / 1000),
+        });
+        return;
+      }
+
+      /* ── /api/kill-switch/activate — DASHBOARD_API_KEY Bearer token auth ── */
+      if (path === '/api/kill-switch/activate' && method === 'POST') {
+        const dashKey = process.env.DASHBOARD_API_KEY;
+        if (!dashKey) {
+          json(res, 403, { ok: false, error: 'Kill-switch disabled: DASHBOARD_API_KEY not configured' });
+          return;
+        }
+        const authHeader = req.headers['authorization'] ?? '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+        if (token !== dashKey) {
+          json(res, 401, { ok: false, error: 'Unauthorized: invalid or missing Bearer token' });
+          return;
+        }
+        // Activate kill switch via engine if available
+        if (this.engine && typeof (this.engine as unknown as { activateKillSwitch?: () => void }).activateKillSwitch === 'function') {
+          (this.engine as unknown as { activateKillSwitch(): void }).activateKillSwitch();
+        }
+        json(res, 200, { ok: true, message: 'Kill switch activated' });
+        return;
+      }
+
       /* ── Rate limiting ── */
       const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.socket.remoteAddress ?? 'unknown';
       if (isRateLimited(clientIp, path)) {

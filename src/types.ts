@@ -14,6 +14,21 @@ export interface WalletConfig {
   strategy: string;
   capital: number;
   riskLimits?: Partial<RiskLimits>;
+  /** On-chain wallet address for balance reconciliation (LIVE mode only) */
+  walletAddress?: string;
+}
+
+export interface FeeConfig {
+  takerFeeRate: number;
+  makerFeeRate: number;
+}
+
+export interface LiveTradingConfig {
+  maxSingleOrderCost: number;
+  maxPendingOrders: number;
+  maxDailyOrders: number;
+  orderTimeoutSeconds: number;
+  minBalanceReserve: number;
 }
 
 export interface EnvironmentConfig {
@@ -23,6 +38,7 @@ export interface EnvironmentConfig {
 export interface PolymarketConfig {
   gammaApi: string;
   clobApi: string;
+  maxMarkets?: number;
 }
 
 export interface StrategyConfigMap {
@@ -34,6 +50,8 @@ export interface AppConfig {
   wallets: WalletConfig[];
   strategyConfig: StrategyConfigMap;
   polymarket: PolymarketConfig;
+  fees: FeeConfig;
+  liveTrading: LiveTradingConfig;
 }
 
 export type OrderSide = 'BUY' | 'SELL';
@@ -151,6 +169,10 @@ export interface WalletState {
   openPositions: Position[];
   realizedPnl: number;
   riskLimits: RiskLimits;
+  /** Daily PnL — reset each midnight UTC */
+  dailyPnl?: number;
+  /** ISO-8601 timestamp of when dailyPnl was last reset */
+  dailyPnlResetAt?: string;
 }
 
 export interface TradeRecord {
@@ -166,4 +188,8 @@ export interface TradeRecord {
   cumulativePnl: number;
   balanceAfter: number;
   timestamp: number;
+  feeAmount?: number;
+  feeRate?: number;
+  /** 'taker' or 'maker' — derived from order type */
+  orderType?: string;
 }

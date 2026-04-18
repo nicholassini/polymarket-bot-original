@@ -1,8 +1,9 @@
 import { PaperWallet } from './paper_wallet';
 import { PolymarketWallet } from './polymarket_wallet';
-import { WalletState, WalletConfig, TradeRecord } from '../types';
+import { WalletState, WalletConfig, TradeRecord, FeeConfig, LiveTradingConfig, OrderFill } from '../types';
 import { logger } from '../reporting/logs';
 import type { TradingDB } from '../storage/trading_db';
+import type { Database } from '../storage/database';
 
 export interface ExecutionWallet {
   getState(): WalletState;
@@ -13,18 +14,29 @@ export interface ExecutionWallet {
     side: 'BUY' | 'SELL';
     price: number;
     size: number;
-  }): Promise<void>;
+  }): Promise<unknown>;
   updateBalance(delta: number): void;
   /** Optional display name for the dashboard (defaults to walletId) */
   getDisplayName?(): string;
   setDisplayName?(name: string): void;
   /** Update risk limits at runtime */
   updateRiskLimits?(limits: Partial<import('../types').RiskLimits>): void;
+  /** Total fees accrued across all fills */
+  getTotalFeesAccrued?(): number;
+  /** Release a reserved balance (e.g. when an order is cancelled) */
+  releaseBalance?(amount: number): void;
+  /** Apply a confirmed fill from the order tracker */
+  applyFill?(fill: OrderFill): void;
 }
 
 export class WalletManager {
   private readonly wallets = new Map<string, ExecutionWallet>();
   private tradingDb: TradingDB | undefined;
+  private db: Database | undefined;
+
+  constructor(db?: Database) {
+    this.db = db;
+  }
 
   setTradingDb(db: TradingDB): void {
     this.tradingDb = db;
@@ -34,7 +46,13 @@ export class WalletManager {
     return this.tradingDb;
   }
 
-  registerWallet(config: WalletConfig, assignedStrategy: string, enableLive: boolean): void {
+  registerWallet(
+    config: WalletConfig,
+    assignedStrategy: string,
+    enableLive: boolean,
+    liveCfg?: LiveTradingConfig,
+    feeCfg?: FeeConfig,
+  ): void {
     if (this.wallets.has(config.id)) {
       throw new Error(`Wallet ${config.id} already registered`);
     }
@@ -49,8 +67,8 @@ export class WalletManager {
 
     const wallet =
       config.mode === 'LIVE'
-        ? new PolymarketWallet(config, assignedStrategy)
-        : new PaperWallet(config, assignedStrategy, this.tradingDb);
+        ? new PolymarketWallet(config, assignedStrategy, this.db, liveCfg, feeCfg)
+        : new PaperWallet(config, assignedStrategy, this.tradingDb, feeCfg);
 
     this.wallets.set(config.id, wallet);
     const state = wallet.getState();
@@ -66,6 +84,23 @@ export class WalletManager {
 
   listWallets(): WalletState[] {
     return Array.from(this.wallets.values()).map((wallet) => wallet.getState());
+  }
+
+  /** Total fees accrued across all wallets */
+  getTotalFeesAccrued(): number {
+    let total = 0;
+    for (const wallet of this.wallets.values()) {
+      total += wallet.getTotalFeesAccrued?.() ?? 0;
+    }
+    return total;
+  }
+
+  /** Per-wallet fee totals */
+  getWalletFees(): Array<{ walletId: string; totalFeesAccrued: number }> {
+    return Array.from(this.wallets.entries()).map(([id, wallet]) => ({
+      walletId: id,
+      totalFeesAccrued: wallet.getTotalFeesAccrued?.() ?? 0,
+    }));
   }
 
   getTradeHistory(walletId: string): readonly TradeRecord[] {

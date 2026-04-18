@@ -1,9 +1,16 @@
-import { WalletConfig, WalletState, Position, TradeRecord, RiskLimits } from '../types';
+import { WalletConfig, WalletState, Position, TradeRecord, RiskLimits, FeeConfig } from '../types';
 import { FillSimulator } from '../paper_trading/fill_simulator';
 import { PnlTracker } from '../paper_trading/pnl_tracker';
 import { logger } from '../reporting/logs';
 import { consoleLog } from '../reporting/console_log';
 import type { TradingDB } from '../storage/trading_db';
+
+export interface PaperOrderResult {
+  status: 'filled' | 'rejected';
+  orderId: string | null;
+  filledSize: number;
+  reason?: string;
+}
 
 export class PaperWallet {
   private static readonly MAX_TRADE_HISTORY = 500;
@@ -13,9 +20,14 @@ export class PaperWallet {
   private readonly trades: TradeRecord[] = [];
   private displayName: string = '';
   private readonly tradingDb: TradingDB | null;
+  private readonly feeCfg: FeeConfig;
+  private totalFeesAccrued: number = 0;
 
-  constructor(config: WalletConfig, assignedStrategy: string, tradingDb?: TradingDB) {
+  private static readonly DEFAULT_FEE_CFG: FeeConfig = { takerFeeRate: 0, makerFeeRate: 0 };
+
+  constructor(config: WalletConfig, assignedStrategy: string, tradingDb?: TradingDB, feeCfg?: FeeConfig) {
     this.tradingDb = tradingDb ?? null;
+    this.feeCfg = feeCfg ?? PaperWallet.DEFAULT_FEE_CFG;
     this.displayName = config.id;
     this.state = {
       walletId: config.id,
@@ -57,6 +69,10 @@ export class PaperWallet {
     return this.trades;
   }
 
+  getTotalFeesAccrued(): number {
+    return this.totalFeesAccrued;
+  }
+
   updateBalance(delta: number): void {
     this.state.availableBalance += delta;
   }
@@ -84,11 +100,18 @@ export class PaperWallet {
     side: 'BUY' | 'SELL';
     price: number;
     size: number;
-  }): Promise<void> {
+  }): Promise<PaperOrderResult> {
+    if (request.size <= 0) {
+      logger.warn(
+        { walletId: this.state.walletId, marketId: request.marketId, side: request.side, size: request.size },
+        'placeOrder: rejected order with size <= 0',
+      );
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: 'size must be > 0' };
+    }
     const fill = this.fillSimulator.simulate(request);
 
-    // Capture entry price BEFORE applyFill mutates the position
-    // (on full close, applyFill resets avgPrice to 0)
+    // Capture entry price BEFORE applyFillInternal mutates the position
+    // (on full close, applyFillInternal resets avgPrice to 0)
     const existingPos = this.state.openPositions.find(
       (p) => p.marketId === fill.marketId && p.outcome === fill.outcome,
     );
@@ -96,11 +119,21 @@ export class PaperWallet {
     // entryPrice = 0 so the full proceeds count as realized profit.
     const entryPrice = existingPos ? existingPos.avgPrice : 0;
 
-    const position = this.applyFill(fill);
+    const position = this.applyFillInternal(fill);
     const pnl = this.pnlTracker.recordFill(fill, position, entryPrice);
-    this.state.realizedPnl += pnl.realized;
-    const cost = fill.price * fill.size * (fill.side === 'BUY' ? 1 : -1);
-    this.state.availableBalance -= cost;
+
+    // Compute fee
+    const feeRate = this.feeCfg.takerFeeRate;
+    const fillCost = fill.price * fill.size;
+    const feeAmount = Math.round(fillCost * feeRate * 100) / 100;
+
+    // Deduct fee from realized PnL on SELL, or add to cost on BUY
+    const netPnl = fill.side === 'SELL' ? pnl.realized - feeAmount : pnl.realized;
+    this.state.realizedPnl += netPnl;
+    this.totalFeesAccrued += feeAmount;
+
+    const signedCost = fillCost * (fill.side === 'BUY' ? 1 : -1);
+    this.state.availableBalance -= signedCost + (fill.side === 'BUY' ? feeAmount : 0);
 
     const tradeRecord: TradeRecord = {
       orderId: fill.orderId,
@@ -110,11 +143,14 @@ export class PaperWallet {
       side: fill.side,
       price: fill.price,
       size: fill.size,
-      cost: Math.abs(cost),
-      realizedPnl: pnl.realized,
+      cost: fillCost,
+      realizedPnl: netPnl,
       cumulativePnl: this.state.realizedPnl,
       balanceAfter: this.state.availableBalance,
       timestamp: fill.timestamp,
+      feeAmount,
+      feeRate,
+      orderType: 'taker',
     };
 
     this.trades.push(tradeRecord);
@@ -136,11 +172,12 @@ export class PaperWallet {
         marketId: fill.marketId,
         price: fill.price,
         size: fill.size,
+        fee: feeAmount,
       },
       `${this.state.walletId} PAPER fill ${fill.side} ${fill.outcome} market=${fill.marketId} price=${fill.price} size=${fill.size}`,
     );
 
-    consoleLog.success('FILL', `[${this.state.walletId}] ${fill.side} ${fill.outcome} ×${fill.size} @ $${fill.price} → PnL $${pnl.realized.toFixed(2)} | Bal $${this.state.availableBalance.toFixed(2)}`, {
+    consoleLog.success('FILL', `[${this.state.walletId}] ${fill.side} ${fill.outcome} ×${fill.size} @ $${fill.price} → PnL $${netPnl.toFixed(2)} | Bal $${this.state.availableBalance.toFixed(2)}`, {
       walletId: this.state.walletId,
       strategy: this.state.assignedStrategy,
       orderId: fill.orderId,
@@ -149,15 +186,18 @@ export class PaperWallet {
       side: fill.side,
       price: fill.price,
       size: fill.size,
-      cost: Math.abs(cost),
-      realizedPnl: Number(pnl.realized.toFixed(4)),
+      cost: fillCost,
+      feeAmount,
+      realizedPnl: Number(netPnl.toFixed(4)),
       cumulativePnl: Number(this.state.realizedPnl.toFixed(4)),
       balanceAfter: Number(this.state.availableBalance.toFixed(2)),
       openPositions: this.state.openPositions.length,
     });
+
+    return { status: 'filled', orderId: fill.orderId, filledSize: fill.size };
   }
 
-  private applyFill(fill: {
+  private applyFillInternal(fill: {
     marketId: string;
     outcome: 'YES' | 'NO';
     side: 'BUY' | 'SELL';

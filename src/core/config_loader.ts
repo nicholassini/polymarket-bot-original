@@ -22,6 +22,14 @@ interface RawConfig {
   }>;
   strategy_config?: Record<string, Record<string, unknown>>;
   polymarket?: { gamma_api?: string; clob_api?: string };
+  fees?: { taker_fee_rate?: number; maker_fee_rate?: number };
+  live_trading?: {
+    max_single_order_cost?: number;
+    max_pending_orders?: number;
+    max_daily_orders?: number;
+    order_timeout_seconds?: number;
+    min_balance_reserve?: number;
+  };
 }
 
 const DEFAULT_LIMITS: RiskLimits = {
@@ -70,6 +78,17 @@ export function loadConfig(path: string): AppConfig {
     polymarket: {
       gammaApi: parsed.polymarket?.gamma_api ?? 'https://gamma-api.polymarket.com',
       clobApi: parsed.polymarket?.clob_api ?? 'https://clob.polymarket.com',
+    },
+    fees: {
+      takerFeeRate: parsed.fees?.taker_fee_rate ?? 0,
+      makerFeeRate: parsed.fees?.maker_fee_rate ?? 0,
+    },
+    liveTrading: {
+      maxSingleOrderCost: parsed.live_trading?.max_single_order_cost ?? 100,
+      maxPendingOrders: parsed.live_trading?.max_pending_orders ?? 5,
+      maxDailyOrders: parsed.live_trading?.max_daily_orders ?? 100,
+      orderTimeoutSeconds: parsed.live_trading?.order_timeout_seconds ?? 120,
+      minBalanceReserve: parsed.live_trading?.min_balance_reserve ?? 0,
     },
   };
 }

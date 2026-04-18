@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import type { TradeRecord, Position } from '../types';
+import { logger } from '../reporting/logs';
 
 export interface SavedWalletState {
   walletId: string;
@@ -65,6 +66,15 @@ export class TradingDB {
         PRIMARY KEY (wallet_id, market_id, outcome)
       );
     `);
+
+    // Phase 9 fee columns — add only if missing (ALTER TABLE does not support IF NOT EXISTS)
+    const cols = (this.db.pragma('table_info(trades)') as Array<{ name: string }>).map(c => c.name);
+    if (!cols.includes('fee_amount')) {
+      this.db.exec(`ALTER TABLE trades ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0`);
+    }
+    if (!cols.includes('fee_rate')) {
+      this.db.exec(`ALTER TABLE trades ADD COLUMN fee_rate REAL NOT NULL DEFAULT 0`);
+    }
   }
 
   /* ── Trades ── */
@@ -76,8 +86,8 @@ export class TradingDB {
 
   private prepareStatements(): void {
     this._insertTrade = this.db.prepare(`
-      INSERT INTO trades (order_id, wallet_id, market_id, outcome, side, price, size, cost, realized_pnl, cumulative_pnl, balance_after, timestamp)
-      VALUES (@orderId, @walletId, @marketId, @outcome, @side, @price, @size, @cost, @realizedPnl, @cumulativePnl, @balanceAfter, @timestamp)
+      INSERT INTO trades (order_id, wallet_id, market_id, outcome, side, price, size, cost, realized_pnl, cumulative_pnl, balance_after, timestamp, fee_amount, fee_rate)
+      VALUES (@orderId, @walletId, @marketId, @outcome, @side, @price, @size, @cost, @realizedPnl, @cumulativePnl, @balanceAfter, @timestamp, @feeAmount, @feeRate)
     `);
     this._upsertState = this.db.prepare(`
       INSERT INTO wallet_state (wallet_id, available_balance, realized_pnl, capital_allocated, updated_at)
@@ -102,13 +112,20 @@ export class TradingDB {
   }
 
   saveTrade(trade: TradeRecord): void {
-    this._insertTrade.run(trade);
+    if (trade.size <= 0 || trade.cost <= 0) {
+      logger.warn(
+        { walletId: trade.walletId, marketId: trade.marketId, orderId: trade.orderId, size: trade.size, cost: trade.cost },
+        'saveTrade: rejected zero-cost/zero-size trade record',
+      );
+      return;
+    }
+    this._insertTrade.run({ feeAmount: 0, feeRate: 0, ...trade });
   }
 
   loadTrades(walletId: string, limit = 500): TradeRecord[] {
     const rows = this.db.prepare(
       `SELECT order_id, wallet_id, market_id, outcome, side, price, size, cost,
-              realized_pnl, cumulative_pnl, balance_after, timestamp
+              realized_pnl, cumulative_pnl, balance_after, timestamp, fee_amount, fee_rate
        FROM trades WHERE wallet_id = ? ORDER BY timestamp DESC LIMIT ?`
     ).all(walletId, limit) as Array<Record<string, unknown>>;
     rows.reverse(); // restore chronological order
@@ -126,6 +143,8 @@ export class TradingDB {
       cumulativePnl: r.cumulative_pnl as number,
       balanceAfter: r.balance_after as number,
       timestamp: r.timestamp as number,
+      feeAmount: (r.fee_amount as number) ?? 0,
+      feeRate: (r.fee_rate as number) ?? 0,
     }));
   }
 

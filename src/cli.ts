@@ -200,7 +200,7 @@ program
     const walletManager = new WalletManager();
     walletManager.setTradingDb(tradingDb);
     for (const wallet of config.wallets) {
-      walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading);
+      walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading, config.liveTrading, config.fees);
     }
     const dashboardPort = Number(process.env.DASHBOARD_PORT ?? 3000);
     const dashboardServer = new DashboardServer(walletManager, dashboardPort);
