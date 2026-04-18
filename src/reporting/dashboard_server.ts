@@ -8,6 +8,7 @@ import { listStrategies } from '../strategies/registry';
 import { logger } from './logs';
 import { consoleLog } from './console_log';
 import type { WhaleAPI } from '../whales/whale_api';
+import type { FeeConfig } from '../types';
 import type { Engine } from '../core/engine';
 import { CopyTradeStrategy } from '../strategies/copy_trading/copy_trade_strategy';
 import { UserDB } from '../auth/user_db';
@@ -843,6 +844,7 @@ function getCachedHtml(key: string, generate: () => string): string {
 export class DashboardServer {
   private server?: http.Server;
   private whaleApi?: WhaleAPI;
+  private feeCfg?: FeeConfig;
   private engine?: Engine;
   private sseClients = new Map<http.ServerResponse, string>(); // response → userId
   private sseInterval?: ReturnType<typeof setInterval>;
@@ -865,6 +867,10 @@ export class DashboardServer {
 
   setWhaleApi(api: WhaleAPI): void {
     this.whaleApi = api;
+  }
+
+  setFeeCfg(cfg: FeeConfig): void {
+    this.feeCfg = cfg;
   }
 
   setEngine(engine: Engine): void {
@@ -902,7 +908,7 @@ export class DashboardServer {
       const tradingDb = this.walletManager.getTradingDb();
       const wallet = cfg.mode === 'LIVE'
         ? new PolymarketWallet(walletConfig, cfg.strategy)
-        : new PaperWallet(walletConfig, cfg.strategy, tradingDb);
+        : new PaperWallet(walletConfig, cfg.strategy, tradingDb, this.feeCfg);
 
       this.walletManager.addWallet(wallet);
       this.engine.addRunner(cfg.walletId, cfg.strategy);
@@ -1719,7 +1725,7 @@ export class DashboardServer {
             maxDrawdown: 0.2,
           },
         };
-        const wallet = new PaperWallet(walletConfig, sw.strategy, this.walletManager.getTradingDb());
+        const wallet = new PaperWallet(walletConfig, sw.strategy, this.walletManager.getTradingDb(), this.feeCfg);
         this.walletManager.addWallet(wallet);
         this.userDb.assignWallet(sw.id, userId);
         this.userDb.saveWalletConfig(sw.id, userId, sw.strategy, sw.capital, 'PAPER', walletConfig.riskLimits);
@@ -1821,7 +1827,7 @@ export class DashboardServer {
       };
       const wallet = mode === 'LIVE'
         ? new PolymarketWallet(walletConfig, strategy)
-        : new PaperWallet(walletConfig, strategy, this.walletManager.getTradingDb());
+        : new PaperWallet(walletConfig, strategy, this.walletManager.getTradingDb(), this.feeCfg);
       this.walletManager.addWallet(wallet);
 
       /* Associate wallet with the authenticated user */
@@ -2100,7 +2106,7 @@ export class DashboardServer {
         };
         const wallet = mode === 'LIVE'
           ? new PolymarketWallet(walletConfig, 'custom_composite')
-          : new PaperWallet(walletConfig, 'custom_composite', this.walletManager.getTradingDb());
+          : new PaperWallet(walletConfig, 'custom_composite', this.walletManager.getTradingDb(), this.feeCfg);
         this.walletManager.addWallet(wallet);
         this.userDb.assignWallet(walletId, userId);
         this.userDb.saveWalletConfig(walletId, userId, 'custom_composite', capital, mode, walletConfig.riskLimits);

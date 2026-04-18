@@ -204,6 +204,7 @@ program
     }
     const dashboardPort = Number(process.env.DASHBOARD_PORT ?? 3000);
     const dashboardServer = new DashboardServer(walletManager, dashboardPort);
+    dashboardServer.setFeeCfg(config.fees);
 
     /* ── Whale Tracking Engine ── */
     const rawConfig = YAML.parse(fs.readFileSync(options.config, 'utf8')) as Record<string, unknown>;
@@ -292,7 +293,7 @@ program
     const config = loadConfig(options.config);
     const walletManager = new WalletManager();
     for (const wallet of config.wallets) {
-      walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading);
+      walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading, config.liveTrading, config.fees);
     }
     logger.info(computeAllPerformance(walletManager.listWallets()));
   });
@@ -305,7 +306,7 @@ program
     const config = loadConfig(options.config);
     const walletManager = new WalletManager();
     for (const wallet of config.wallets) {
-      walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading);
+      walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading, config.liveTrading, config.fees);
     }
     logger.info({ paperWallets: walletManager.listWallets().filter((w) => w.mode === 'PAPER') });
   });
