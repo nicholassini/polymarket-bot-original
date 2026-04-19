@@ -2,6 +2,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PolymarketWallet } from '../src/wallets/polymarket_wallet';
 import type { WalletConfig, LiveTradingConfig } from '../src/types';
 
+// Mock the clob_client module so tests control getClobClient()
+vi.mock('../src/utils/clob_client', () => ({
+  getClobClient: vi.fn(),
+  _resetClobClient: vi.fn(),
+  CLOB_API_URL: 'https://clob.polymarket.com',
+  getClobHeaders: vi.fn().mockReturnValue({}),
+  hasClobApiKey: vi.fn().mockReturnValue(false),
+}));
+
+import { getClobClient } from '../src/utils/clob_client';
+
 const baseConfig: WalletConfig = {
   id: 'live-wallet-1',
   mode: 'LIVE',
@@ -23,30 +34,29 @@ const baseRequest = {
   side: 'BUY' as const,
   price: 0.5,
   size: 10,
+  tokenId: 'token-abc-123',
 };
 
 function makeWallet(overrides: Partial<WalletConfig> = {}): PolymarketWallet {
   return new PolymarketWallet({ ...baseConfig, ...overrides }, 'momentum', undefined, liveCfg);
 }
 
-describe('PolymarketWallet.placeOrder', () => {
-  beforeEach(() => {
-    process.env.POLYMARKET_API_KEY = 'test-api-key';
-  });
+function makeMockClient(overrides: Record<string, unknown> = {}) {
+  return {
+    createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'clob-order-123' }),
+    ...overrides,
+  };
+}
 
+describe('PolymarketWallet.placeOrder', () => {
   afterEach(() => {
-    delete process.env.POLYMARKET_API_KEY;
-    vi.restoreAllMocks();
+    vi.resetAllMocks();
   });
 
   // a. Successful order submission → status: 'submitted'
-  it('returns submitted status on successful API response', async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ orderID: 'clob-order-123' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
+  it('returns submitted status on successful SDK response', async () => {
+    const mockClient = makeMockClient();
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     const wallet = makeWallet();
     const result = await wallet.placeOrder(baseRequest);
@@ -54,80 +64,74 @@ describe('PolymarketWallet.placeOrder', () => {
     expect(result.status).toBe('submitted');
     expect(result.orderId).toBe('clob-order-123');
     expect(result.filledSize).toBe(0);
-    expect(mockFetch).toHaveBeenCalledOnce();
-    // Ensure API key is NOT in any logged value (we check fetch call args)
-    const [, fetchOptions] = mockFetch.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(fetchOptions.body as string) as Record<string, unknown>;
-    expect(JSON.stringify(body)).not.toContain('test-api-key');
+    expect(mockClient.createAndPostOrder).toHaveBeenCalledOnce();
+    const [orderArg] = mockClient.createAndPostOrder.mock.calls[0] as [Record<string, unknown>];
+    expect(orderArg.tokenID).toBe(baseRequest.tokenId);
+    expect(orderArg.price).toBe(baseRequest.price);
+    expect(orderArg.size).toBe(baseRequest.size);
   });
 
-  // b. Order rejected by API (400) → status: 'rejected'
-  it('returns rejected on 400 response without retrying', async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce({
-      ok: false,
-      status: 400,
-      text: async () => 'insufficient margin',
+  // b. Order rejected by CLOB (success=false) → status: 'rejected'
+  it('returns rejected when SDK response has success=false', async () => {
+    const mockClient = makeMockClient({
+      createAndPostOrder: vi.fn().mockResolvedValue({ success: false, errorMsg: 'insufficient margin' }),
     });
-    vi.stubGlobal('fetch', mockFetch);
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     const wallet = makeWallet();
     const result = await wallet.placeOrder(baseRequest);
 
     expect(result.status).toBe('rejected');
     expect(result.reason).toContain('insufficient margin');
-    // Should only be called once — no retry on 4xx
-    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockClient.createAndPostOrder).toHaveBeenCalledOnce();
   });
 
-  // c. API server error (500) → retries then returns 'error'
-  it('returns error after server error exhausts retries', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      text: async () => 'internal server error',
+  // c. SDK throws → status: 'error'
+  it('returns error when SDK throws', async () => {
+    const mockClient = makeMockClient({
+      createAndPostOrder: vi.fn().mockRejectedValue(new Error('network timeout')),
     });
-    vi.stubGlobal('fetch', mockFetch);
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     const wallet = makeWallet();
     const result = await wallet.placeOrder(baseRequest);
 
     expect(result.status).toBe('error');
-    // fetchWithRetry with maxRetries=2 should try twice
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-  });
-
-  // d. Network timeout → status: 'error', reason: 'network failure'
-  it('returns error with network failure reason on thrown network error', async () => {
-    const mockFetch = vi.fn().mockRejectedValue(new Error('network timeout'));
-    vi.stubGlobal('fetch', mockFetch);
-
-    const wallet = makeWallet();
-    const result = await wallet.placeOrder(baseRequest);
-
-    expect(result.status).toBe('error');
-    expect(result.reason).toBe('network failure');
+    expect(result.reason).toContain('network timeout');
     expect(result.orderId).toBeNull();
   });
 
-  // e. Insufficient balance → refuses without API call
-  it('refuses order when balance is insufficient', async () => {
-    const mockFetch = vi.fn();
-    vi.stubGlobal('fetch', mockFetch);
+  // d. tokenId missing → rejected without SDK call
+  it('rejects when tokenId is not provided', async () => {
+    const mockClient = makeMockClient();
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
-    // capital=1000, but size=100 * price=0.5 = $50, plus reserve $10 = $60 needed, capital=1000 is fine
-    // Set capital low so balance < orderCost
+    const wallet = makeWallet();
+    const { tokenId: _ignored, ...requestWithoutToken } = baseRequest;
+    const result = await wallet.placeOrder(requestWithoutToken as typeof baseRequest);
+
+    expect(result.status).toBe('rejected');
+    expect(result.reason).toMatch(/tokenId required/);
+    expect(mockClient.createAndPostOrder).not.toHaveBeenCalled();
+  });
+
+  // e. Insufficient balance → refused before SDK call
+  it('refuses order when balance is insufficient', async () => {
+    const mockClient = makeMockClient();
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
+
     const wallet = makeWallet({ capital: 1 });
-    const result = await wallet.placeOrder({ ...baseRequest, size: 10, price: 0.5 }); // cost = $5, balance = $1
+    const result = await wallet.placeOrder(baseRequest); // cost = $5, balance = $1
 
     expect(result.status).toBe('rejected');
     expect(result.reason).toMatch(/insufficient balance/);
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClient.createAndPostOrder).not.toHaveBeenCalled();
   });
 
-  // f. Exceeds MAX_SINGLE_ORDER_COST → refuses without API call
+  // f. Exceeds MAX_SINGLE_ORDER_COST → refused before SDK call
   it('refuses order that exceeds maxSingleOrderCost', async () => {
-    const mockFetch = vi.fn();
-    vi.stubGlobal('fetch', mockFetch);
+    const mockClient = makeMockClient();
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     const wallet = makeWallet({ capital: 10000 });
     // price=0.6, size=200 → cost=$120, limit=$50
@@ -135,32 +139,27 @@ describe('PolymarketWallet.placeOrder', () => {
 
     expect(result.status).toBe('rejected');
     expect(result.reason).toMatch(/maxSingleOrderCost/);
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClient.createAndPostOrder).not.toHaveBeenCalled();
   });
 
-  // g. Exceeds MAX_PENDING_ORDERS → refuses without API call
+  // g. Exceeds MAX_PENDING_ORDERS → refused before SDK call
   it('refuses order when maxPendingOrders is reached', async () => {
-    const mockFetch = vi.fn();
-    vi.stubGlobal('fetch', mockFetch);
+    const mockClient = makeMockClient();
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     const limitCfg: LiveTradingConfig = { ...liveCfg, maxPendingOrders: 2 };
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, limitCfg);
-    // Inject a mock tracker that reports 2 pending orders (at the limit)
     wallet.setOrderTracker({ getPendingForWallet: () => ['order-1', 'order-2'] });
 
     const result = await wallet.placeOrder(baseRequest);
     expect(result.status).toBe('rejected');
     expect(result.reason).toMatch(/maxPendingOrders/);
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClient.createAndPostOrder).not.toHaveBeenCalled();
   });
 
   it('accepts order when pending count is below maxPendingOrders', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ orderID: 'new-order' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
+    const mockClient = makeMockClient();
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     const limitCfg: LiveTradingConfig = { ...liveCfg, maxPendingOrders: 3 };
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, limitCfg);
@@ -168,13 +167,13 @@ describe('PolymarketWallet.placeOrder', () => {
 
     const result = await wallet.placeOrder(baseRequest);
     expect(result.status).toBe('submitted');
-    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockClient.createAndPostOrder).toHaveBeenCalledOnce();
   });
 
-  // h. Below min_balance_reserve → refuses without API call
+  // h. Below min_balance_reserve → refused before SDK call
   it('refuses order that would breach minBalanceReserve', async () => {
-    const mockFetch = vi.fn();
-    vi.stubGlobal('fetch', mockFetch);
+    const mockClient = makeMockClient();
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     // capital=20, orderCost=15 (price=0.5 * size=30), reserve=10
     // balance(20) - cost(15) = 5 < reserve(10) → refuse
@@ -183,30 +182,22 @@ describe('PolymarketWallet.placeOrder', () => {
 
     expect(result.status).toBe('rejected');
     expect(result.reason).toMatch(/minBalanceReserve/);
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClient.createAndPostOrder).not.toHaveBeenCalled();
   });
 
-  // i. API key not set → refuses without API call
-  it('refuses order when POLYMARKET_API_KEY is not set', async () => {
-    delete process.env.POLYMARKET_API_KEY;
-    const mockFetch = vi.fn();
-    vi.stubGlobal('fetch', mockFetch);
+  // i. getClobClient returns null → rejected
+  it('refuses order when getClobClient returns null (no private key)', async () => {
+    vi.mocked(getClobClient).mockResolvedValue(null as never);
 
     const wallet = makeWallet();
     const result = await wallet.placeOrder(baseRequest);
 
     expect(result.status).toBe('rejected');
-    expect(result.reason).toMatch(/API key not set/);
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result.reason).toMatch(/POLYMARKET_PRIVATE_KEY/);
   });
 
   it('increments daily order count on successful submission', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ orderID: 'order-abc' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient() as never);
 
     const wallet = makeWallet();
     expect(wallet.getDailyOrderCount()).toBe(0);
@@ -216,36 +207,23 @@ describe('PolymarketWallet.placeOrder', () => {
 });
 
 describe('PolymarketWallet balance reservation', () => {
-  beforeEach(() => {
-    process.env.POLYMARKET_API_KEY = 'test-api-key';
-  });
   afterEach(() => {
-    delete process.env.POLYMARKET_API_KEY;
-    vi.restoreAllMocks();
+    vi.resetAllMocks();
   });
 
   it('reserves balance on submit and getAvailableBalance reflects it', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ orderID: 'order-1' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({ createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'order-1' }) }) as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
-    // capital=1000, order cost = 0.5 * 10 = 5
     expect(wallet.getAvailableBalance()).toBe(1000);
     await wallet.placeOrder(baseRequest); // cost=5, should reserve 5
     expect(wallet.getAvailableBalance()).toBe(995);
   });
 
-  it('releases reservation on CLOB rejection (4xx)', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 400,
-      text: async () => 'bad request',
-    });
-    vi.stubGlobal('fetch', mockFetch);
+  it('releases reservation on SDK rejection (success=false)', async () => {
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({
+      createAndPostOrder: vi.fn().mockResolvedValue({ success: false, errorMsg: 'bad request' }),
+    }) as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
     expect(wallet.getAvailableBalance()).toBe(1000);
@@ -253,22 +231,18 @@ describe('PolymarketWallet balance reservation', () => {
     expect(wallet.getAvailableBalance()).toBe(1000); // released
   });
 
-  it('releases reservation on server error (5xx)', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      text: async () => 'server error',
-    });
-    vi.stubGlobal('fetch', mockFetch);
+  it('releases reservation on SDK error (throws)', async () => {
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({
+      createAndPostOrder: vi.fn().mockRejectedValue(new Error('server error')),
+    }) as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
     await wallet.placeOrder(baseRequest);
     expect(wallet.getAvailableBalance()).toBe(1000);
   });
 
-  it('releases reservation on network error', async () => {
-    const mockFetch = vi.fn().mockRejectedValue(new Error('network down'));
-    vi.stubGlobal('fetch', mockFetch);
+  it('releases reservation when getClobClient returns null', async () => {
+    vi.mocked(getClobClient).mockResolvedValue(null as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
     await wallet.placeOrder(baseRequest);
@@ -294,17 +268,7 @@ describe('PolymarketWallet balance reservation', () => {
   });
 
   it('prevents double-spend: second order rejected when reserved funds cover balance', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ orderID: 'order-1' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
-
-    // capital=15, reserve=10, order cost=5
-    // First order: available=15, cost=5, after reserve: available=10 (still >= reserve of 10)
-    // Actually: available(15) - cost(5) = 10 which equals reserve(10) — NOT less than reserve
-    // So first passes. Second order: available=10, cost=5, 10-5=5 < 10 reserve → refused
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({ createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'order-1' }) }) as never);
 
     const tightCfg: LiveTradingConfig = { ...liveCfg, minBalanceReserve: 10, maxSingleOrderCost: 50 };
     const wallet = new PolymarketWallet({ ...baseConfig, capital: 15 }, 'momentum', undefined, tightCfg);
@@ -321,19 +285,15 @@ describe('PolymarketWallet balance reservation', () => {
 });
 
 describe('PolymarketWallet reconcileBalance', () => {
-  beforeEach(() => {
-    process.env.POLYMARKET_API_KEY = 'test-api-key';
-  });
   afterEach(() => {
-    delete process.env.POLYMARKET_API_KEY;
     vi.restoreAllMocks();
   });
 
-  it('logs warning when on-chain balance differs from expected by more than 1 USDC', async () => {
+  it('logs warning when on-chain balance differs from expected by more than 1 pUSD', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    // On-chain: 500 USDC, bot tracks 1000 — diff=500 > 1 → warn
-    const onChainRaw = BigInt(Math.round(500 * 1e6));
+    // On-chain: 500 pUSD (18 decimals), bot tracks 1000 — diff=500 > 1 → warn
+    const onChainRaw = BigInt(Math.round(500 * 1e18));
     const hexBalance = `0x${onChainRaw.toString(16).padStart(64, '0')}`;
 
     const mockFetch = vi.fn().mockResolvedValue({
@@ -343,7 +303,6 @@ describe('PolymarketWallet reconcileBalance', () => {
     });
     vi.stubGlobal('fetch', mockFetch);
 
-    // Spy on logger.warn directly
     const { logger } = await import('../src/reporting/logs');
     const logWarnSpy = vi.spyOn(logger, 'warn');
 
@@ -365,8 +324,9 @@ describe('PolymarketWallet reconcileBalance', () => {
     warnSpy.mockRestore();
   });
 
-  it('logs nothing when on-chain balance matches expected within 1 USDC', async () => {
-    const onChainRaw = BigInt(Math.round(1000 * 1e6));
+  it('logs nothing when on-chain balance matches expected within 1 pUSD', async () => {
+    // 1000 pUSD = 1000 * 10^18 raw
+    const onChainRaw = BigInt('1000000000000000000000'); // 1000 * 1e18
     const hexBalance = `0x${onChainRaw.toString(16).padStart(64, '0')}`;
 
     const mockFetch = vi.fn().mockResolvedValue({
@@ -398,10 +358,13 @@ describe('PolymarketWallet reconcileBalance', () => {
 
   it('startReconciliation and stopReconciliation control the interval', () => {
     vi.useFakeTimers();
+    // pUSD: 1000 * 1e18
+    const onChainRaw = BigInt('1000000000000000000000');
+    const hexBalance = `0x${onChainRaw.toString(16).padStart(64, '0')}`;
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ result: '0x' + BigInt(Math.round(1000 * 1e6)).toString(16).padStart(64, '0') }),
+      json: async () => ({ result: hexBalance }),
     });
     vi.stubGlobal('fetch', mockFetch);
 
@@ -415,43 +378,32 @@ describe('PolymarketWallet reconcileBalance', () => {
     wallet.startReconciliation(1000);
     vi.advanceTimersByTime(3500);
     wallet.stopReconciliation();
-    // Should have fired 3 times (at 1s, 2s, 3s)
     expect(mockFetch).toHaveBeenCalledTimes(3);
 
-    vi.advanceTimersByTime(5000); // after stop, no more calls
+    vi.advanceTimersByTime(5000);
     expect(mockFetch).toHaveBeenCalledTimes(3);
     vi.useRealTimers();
   });
 });
 
-describe('PolymarketWallet — double-debit prevention (Option A)', () => {
-  beforeEach(() => {
-    process.env.POLYMARKET_API_KEY = 'test-api-key';
-  });
+describe('PolymarketWallet — double-debit prevention', () => {
   afterEach(() => {
-    delete process.env.POLYMARKET_API_KEY;
-    vi.restoreAllMocks();
+    vi.resetAllMocks();
   });
 
   it('does not debit gross balance at submission — reservation only', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
-    }));
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({ createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'order-1' }) }) as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
     const result = await wallet.placeOrder(baseRequest); // cost = 0.5 * 10 = 5
 
     expect(result.status).toBe('submitted');
-    // Gross balance is NOT yet decremented — only reserved
-    expect(wallet.getState().availableBalance).toBe(1000);
-    // Effective available balance = gross - reserved = 1000 - 5 = 995
-    expect(wallet.getAvailableBalance()).toBe(995);
+    expect(wallet.getState().availableBalance).toBe(1000); // gross NOT decremented
+    expect(wallet.getAvailableBalance()).toBe(995); // effective = gross - reserved
   });
 
   it('debits balance exactly once via applyFill after submission', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
-    }));
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({ createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'order-1' }) }) as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
     const result = await wallet.placeOrder(baseRequest); // cost = 5, reserved
@@ -466,39 +418,31 @@ describe('PolymarketWallet — double-debit prevention (Option A)', () => {
       timestamp: Date.now(),
     });
 
-    // Reservation released + balance debited exactly once by cost (+ fee = 0)
     expect(wallet.getState().availableBalance).toBe(995);
     expect(wallet.getAvailableBalance()).toBe(995); // reserved = 0
   });
 
   it('releases reservation and restores balance to full on cancel', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
-    }));
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({ createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'order-1' }) }) as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
     await wallet.placeOrder(baseRequest); // cost = 5, reserved
 
     expect(wallet.getAvailableBalance()).toBe(995);
 
-    // Simulate OrderTracker calling releaseBalance on cancel
     const cost = baseRequest.price * baseRequest.size; // 5
     wallet.releaseBalance(cost);
 
-    // Reservation released, no debit — full balance restored
     expect(wallet.getState().availableBalance).toBe(1000);
     expect(wallet.getAvailableBalance()).toBe(1000);
   });
 
   it('debits only filled portion on partial fill, keeps remainder reserved', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
-    }));
+    vi.mocked(getClobClient).mockResolvedValue(makeMockClient({ createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'order-1' }) }) as never);
 
     const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
     await wallet.placeOrder(baseRequest); // full order: size=10, cost=5, reserved=5
 
-    // Partial fill: 6 out of 10 shares, cost = 0.5 * 6 = 3
     wallet.applyFill({
       orderId: 'order-1',
       marketId: baseRequest.marketId,
@@ -510,13 +454,11 @@ describe('PolymarketWallet — double-debit prevention (Option A)', () => {
     });
 
     // 6 shares filled: releaseReservation(3) + balance -= 3 (fee=0)
-    // 4 shares still reserved: reserved = 5 - 3 = 2
     expect(wallet.getState().availableBalance).toBe(997); // 1000 - 3
     expect(wallet.getAvailableBalance()).toBe(995);       // 997 - 2
 
-    // Release the remaining 4-share reservation (as OrderTracker would on cancel)
-    wallet.releaseBalance(0.5 * 4); // release 2
+    wallet.releaseBalance(0.5 * 4); // release remaining 4-share reservation
     expect(wallet.getState().availableBalance).toBe(997);
-    expect(wallet.getAvailableBalance()).toBe(997); // reserved fully released
+    expect(wallet.getAvailableBalance()).toBe(997);
   });
 });

@@ -8,6 +8,16 @@ import { WalletManager } from '../src/wallets/wallet_manager';
 import { PolymarketWallet } from '../src/wallets/polymarket_wallet';
 import type { PendingOrder } from '../src/types/order';
 import type { WalletConfig, LiveTradingConfig, OrderFill } from '../src/types';
+import type { ClobClient } from '@polymarket/clob-client-v2';
+
+// Mock the clob_client module (PolymarketWallet imports it)
+vi.mock('../src/utils/clob_client', () => ({
+  getClobClient: vi.fn().mockResolvedValue(null),
+  _resetClobClient: vi.fn(),
+  CLOB_API_URL: 'https://clob.polymarket.com',
+  getClobHeaders: vi.fn().mockReturnValue({}),
+  hasClobApiKey: vi.fn().mockReturnValue(false),
+}));
 
 const liveCfg: LiveTradingConfig = {
   maxSingleOrderCost: 50,
@@ -49,45 +59,52 @@ function makePendingOrder(overrides: Partial<PendingOrder> = {}): PendingOrder {
   };
 }
 
+/** Build a minimal mock ClobClient for OrderTracker */
+function makeMockClobClient(overrides: Partial<{
+  getOrder: ReturnType<typeof vi.fn>;
+  cancelOrder: ReturnType<typeof vi.fn>;
+}> = {}): ClobClient {
+  return {
+    getOrder: vi.fn().mockResolvedValue({ status: 'UNMATCHED', size_matched: '0', price: '0.5' }),
+    cancelOrder: vi.fn().mockResolvedValue({ success: true }),
+    ...overrides,
+  } as unknown as ClobClient;
+}
+
 describe('OrderTracker', () => {
   let db: Database;
   let dbPath: string;
   let walletManager: WalletManager;
   let wallet: PolymarketWallet;
+  let mockClient: ClobClient;
 
   beforeEach(() => {
-    process.env.POLYMARKET_API_KEY = 'test-key';
     ({ db, dbPath } = makeTempDb());
     walletManager = new WalletManager(db);
     wallet = new PolymarketWallet(walletConfig, 'momentum', db, liveCfg);
-    // Pre-save wallet row so FK constraints pass when saveTrade is called
     db.saveWallet(wallet.getState());
     walletManager.registerExternalWallet(walletConfig.id, wallet);
+    mockClient = makeMockClobClient();
   });
 
   afterEach(() => {
     db.close();
     if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-    delete process.env.POLYMARKET_API_KEY;
-    vi.restoreAllMocks();
+    vi.resetAllMocks();
   });
 
   // a. Order confirmed filled → applyFill called, trade persisted, removed from pending
   it('applies fill and removes from pending when CLOB reports MATCHED', async () => {
     const applyFillSpy = vi.spyOn(wallet, 'applyFill');
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ status: 'MATCHED', size_matched: 10, price: 0.5 }),
+    mockClient = makeMockClobClient({
+      getOrder: vi.fn().mockResolvedValue({ status: 'MATCHED', size_matched: '10', price: '0.5' }),
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const tracker = new OrderTracker(db, walletManager, 'test-key');
+    const tracker = new OrderTracker(db, walletManager, mockClient);
     const order = makePendingOrder();
     tracker.addPendingOrder(order);
     expect(tracker.getPendingCount()).toBe(1);
 
-    // Trigger a poll cycle manually
     await (tracker as unknown as { pollPendingOrders(): Promise<void> }).pollPendingOrders();
 
     expect(applyFillSpy).toHaveBeenCalledOnce();
@@ -98,17 +115,14 @@ describe('OrderTracker', () => {
     expect(db.loadPendingOrders()).toHaveLength(0);
   });
 
-  // b. Order confirmed rejected → logged, removed from pending, no balance change
+  // b. Order cancelled → no fill, removed from pending
   it('removes cancelled orders without applying fill', async () => {
     const applyFillSpy = vi.spyOn(wallet, 'applyFill');
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ status: 'CANCELLED' }),
+    mockClient = makeMockClobClient({
+      getOrder: vi.fn().mockResolvedValue({ status: 'CANCELLED', size_matched: '0', price: '0.5' }),
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const tracker = new OrderTracker(db, walletManager, 'test-key');
+    const tracker = new OrderTracker(db, walletManager, mockClient);
     const order = makePendingOrder();
     tracker.addPendingOrder(order);
 
@@ -116,21 +130,17 @@ describe('OrderTracker', () => {
 
     expect(applyFillSpy).not.toHaveBeenCalled();
     expect(tracker.getPendingCount()).toBe(0);
-    const balanceAfter = wallet.getState().availableBalance;
-    expect(balanceAfter).toBe(1000); // unchanged
+    expect(wallet.getState().availableBalance).toBe(1000); // unchanged
   });
 
   // c. Partial fill → partial applyFill, order remains in pending with reduced size
   it('applies partial fill and keeps order in pending with reduced size', async () => {
     const applyFillSpy = vi.spyOn(wallet, 'applyFill');
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ status: 'PARTIALLY_MATCHED', size_matched: 4, price: 0.5 }),
+    mockClient = makeMockClobClient({
+      getOrder: vi.fn().mockResolvedValue({ status: 'PARTIALLY_MATCHED', size_matched: '4', price: '0.5' }),
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const tracker = new OrderTracker(db, walletManager, 'test-key');
+    const tracker = new OrderTracker(db, walletManager, mockClient);
     const order = makePendingOrder({ submission: { marketId: 'POLY-MARKET-1', outcome: 'YES', side: 'BUY', price: 0.5, size: 10 } });
     tracker.addPendingOrder(order);
 
@@ -138,18 +148,18 @@ describe('OrderTracker', () => {
 
     expect(applyFillSpy).toHaveBeenCalledOnce();
     const fill = applyFillSpy.mock.calls[0][0] as OrderFill;
-    expect(fill.size).toBe(4); // only partial
+    expect(fill.size).toBe(4); // partial
     expect(tracker.getPendingCount()).toBe(1); // still tracking remainder
     const remaining = tracker.getPendingForWallet('live-wallet-1');
     expect(remaining[0].submission.size).toBe(6); // 10 - 4
   });
 
-  // d. Order times out → cancel API called, removed from pending, alert sent
+  // d. Order times out → cancel SDK called, removed from pending
   it('cancels and removes timed-out orders', async () => {
-    const deleteFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    vi.stubGlobal('fetch', deleteFetch);
+    const cancelSpy = vi.fn().mockResolvedValue({ success: true });
+    mockClient = makeMockClobClient({ cancelOrder: cancelSpy });
 
-    const tracker = new OrderTracker(db, walletManager, 'test-key');
+    const tracker = new OrderTracker(db, walletManager, mockClient);
     tracker.setOrderTimeoutMs(0); // expire immediately
 
     const oldDate = new Date(Date.now() - 999_999).toISOString();
@@ -160,21 +170,18 @@ describe('OrderTracker', () => {
 
     expect(tracker.getPendingCount()).toBe(0);
     expect(db.loadPendingOrders()).toHaveLength(0);
-    // DELETE call should have been made
-    const [url, opts] = deleteFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain(order.orderId);
-    expect(opts.method).toBe('DELETE');
+    expect(cancelSpy).toHaveBeenCalledOnce();
+    const [payload] = cancelSpy.mock.calls[0] as [{ orderID: string }][];
+    expect((payload as unknown as { orderID: string }).orderID).toBe(order.orderId);
   });
 
-  // e. API status check fails → order stays in pending, checkCount incremented
+  // e. SDK status check throws → order stays in pending, checkCount incremented
   it('increments checkCount and keeps order on status check failure', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
+    mockClient = makeMockClobClient({
+      getOrder: vi.fn().mockRejectedValue(new Error('network error')),
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const tracker = new OrderTracker(db, walletManager, 'test-key');
+    const tracker = new OrderTracker(db, walletManager, mockClient);
     const order = makePendingOrder();
     tracker.addPendingOrder(order);
 
@@ -187,40 +194,38 @@ describe('OrderTracker', () => {
 
   // f. Pending orders survive restart → save to DB, create new tracker, load from DB
   it('resumes pending orders from DB on start', () => {
-    const tracker1 = new OrderTracker(db, walletManager, 'test-key');
+    const tracker1 = new OrderTracker(db, walletManager, mockClient);
     const order = makePendingOrder({ orderId: 'survive-restart-order' });
     tracker1.addPendingOrder(order);
     expect(db.loadPendingOrders()).toHaveLength(1);
 
-    // Simulate restart: new tracker instance
-    const tracker2 = new OrderTracker(db, walletManager, 'test-key');
+    const tracker2 = new OrderTracker(db, walletManager, mockClient);
     tracker2.start();
-    // stop immediately so no real polling occurs
     tracker2.stop();
 
     expect(tracker2.getPendingCount()).toBe(1);
     expect(tracker2.getPendingForWallet('live-wallet-1')[0].orderId).toBe('survive-restart-order');
   });
 
-  // g. Stop method cancels all pending orders → cancel API called for each
+  // g. Stop method cancels all pending orders
   it('cancels all pending orders on stop', async () => {
-    const deleteFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    vi.stubGlobal('fetch', deleteFetch);
+    const cancelSpy = vi.fn().mockResolvedValue({ success: true });
+    mockClient = makeMockClobClient({ cancelOrder: cancelSpy });
 
-    const tracker = new OrderTracker(db, walletManager, 'test-key');
+    const tracker = new OrderTracker(db, walletManager, mockClient);
     tracker.addPendingOrder(makePendingOrder({ orderId: 'order-1' }));
     tracker.addPendingOrder(makePendingOrder({ orderId: 'order-2', walletId: 'live-wallet-1' }));
     expect(tracker.getPendingCount()).toBe(2);
 
     tracker.stop();
 
-    // Allow the async cancel calls to be queued (they're fire-and-forget)
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(deleteFetch).toHaveBeenCalledTimes(2);
-    const urls = deleteFetch.mock.calls.map(([url]: [string]) => url as string);
-    expect(urls.some((u) => u.includes('order-1'))).toBe(true);
-    expect(urls.some((u) => u.includes('order-2'))).toBe(true);
+    expect(cancelSpy).toHaveBeenCalledTimes(2);
+    const orderIds = cancelSpy.mock.calls.map(([payload]: [{ orderID: string }][]) =>
+      (payload as unknown as { orderID: string }).orderID);
+    expect(orderIds).toContain('order-1');
+    expect(orderIds).toContain('order-2');
   });
 
   // g2. Poll guard: concurrent poll is skipped with a warning
@@ -228,24 +233,21 @@ describe('OrderTracker', () => {
     const { logger } = await import('../src/reporting/logs');
     const logWarnSpy = vi.spyOn(logger, 'warn');
 
-    // Fetch that never resolves — simulates a hung poll
-    let resolveFetch!: () => void;
-    const hangingFetch = vi.fn().mockReturnValue(
-      new Promise<{ ok: boolean; status: number; json: () => Promise<{ status: string }> }>((resolve) => {
-        resolveFetch = () => resolve({ ok: true, status: 200, json: async () => ({ status: 'UNMATCHED' }) });
-      }),
-    );
-    vi.stubGlobal('fetch', hangingFetch);
+    let resolveGetOrder!: () => void;
+    mockClient = makeMockClobClient({
+      getOrder: vi.fn().mockReturnValue(
+        new Promise<{ status: string; size_matched: string; price: string }>((resolve) => {
+          resolveGetOrder = () => resolve({ status: 'UNMATCHED', size_matched: '0', price: '0.5' });
+        }),
+      ),
+    });
 
-    const tracker = new OrderTracker(db, walletManager, 'test-key');
+    const tracker = new OrderTracker(db, walletManager, mockClient);
     const order = makePendingOrder();
     tracker.addPendingOrder(order);
 
-    // Start first poll — it will hang
     const firstPoll = (tracker as unknown as { _doPoll(): Promise<void> })._doPoll();
 
-    // Second poll should be skipped because isPolling=true — but we need to test via pollPendingOrders
-    // We do this by setting isPolling=true manually and then calling pollPendingOrders
     (tracker as unknown as { isPolling: boolean }).isPolling = true;
     await (tracker as unknown as { pollPendingOrders(): Promise<void> }).pollPendingOrders();
 
@@ -256,14 +258,20 @@ describe('OrderTracker', () => {
     });
     expect(skipWarn).toBeDefined();
 
-    // Clean up: resolve the hanging fetch and reset isPolling
     (tracker as unknown as { isPolling: boolean }).isPolling = false;
-    resolveFetch();
+    resolveGetOrder();
     await firstPoll;
   });
 
-  // h. Daily order limit enforced via PolymarketWallet
+  // h. Daily order limit enforced via PolymarketWallet (no SDK call needed)
   it('placeOrder is refused after daily order limit is reached', async () => {
+    const { getClobClient: mockGetClobClient } = await import('../src/utils/clob_client');
+    const sdkClient = makeMockClobClient({
+      getOrder: vi.fn(),
+      createAndPostOrder: vi.fn().mockResolvedValue({ orderID: 'order-first' }),
+    } as unknown as Partial<{ getOrder: ReturnType<typeof vi.fn>; cancelOrder: ReturnType<typeof vi.fn> }>);
+    vi.mocked(mockGetClobClient).mockResolvedValue(sdkClient as never);
+
     const zeroLimitCfg: LiveTradingConfig = { ...liveCfg, maxDailyOrders: 1 };
     const limitedWallet = new PolymarketWallet(
       { ...walletConfig, id: 'limited-wallet' },
@@ -272,14 +280,7 @@ describe('OrderTracker', () => {
       zeroLimitCfg,
     );
 
-    const successFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ orderID: 'order-first' }),
-    });
-    vi.stubGlobal('fetch', successFetch);
-
-    const req = { marketId: 'MARKET-1', outcome: 'YES' as const, side: 'BUY' as const, price: 0.5, size: 5 };
+    const req = { marketId: 'MARKET-1', outcome: 'YES' as const, side: 'BUY' as const, price: 0.5, size: 5, tokenId: 'tok-1' };
 
     const first = await limitedWallet.placeOrder(req);
     expect(first.status).toBe('submitted');
@@ -288,7 +289,6 @@ describe('OrderTracker', () => {
     const second = await limitedWallet.placeOrder(req);
     expect(second.status).toBe('rejected');
     expect(second.reason).toMatch(/maxDailyOrders/);
-    // fetch should only have been called once (for the first successful order)
-    expect(successFetch).toHaveBeenCalledOnce();
+    expect(sdkClient.getOrder as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });

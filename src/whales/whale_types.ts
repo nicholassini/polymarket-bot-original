@@ -740,7 +740,7 @@ export const DEFAULT_SCANNER_CONFIG: ScannerConfig = {
   fastScan: { ...DEFAULT_FAST_SCAN_CONFIG },
   backfillDays: 7,
   polygonRpcUrl: 'https://polygon-rpc.com',
-  usdcContractAddress: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+  usdcContractAddress: '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB',
   networkGraphEnabled: true,
   copySimEnabled: true,
   copySimSlippageBps: 30,

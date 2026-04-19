@@ -4,6 +4,8 @@ export interface OrderSubmission {
   side: 'BUY' | 'SELL';
   price: number;
   size: number;
+  /** V2: CLOB token ID encoding the market + outcome. Required for live orders. */
+  tokenId?: string;
 }
 
 export interface OrderResult {

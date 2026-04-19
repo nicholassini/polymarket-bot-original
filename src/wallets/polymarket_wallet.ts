@@ -2,6 +2,8 @@ import { WalletConfig, WalletState, Position, TradeRecord, RiskLimits, OrderFill
 import { logger } from '../reporting/logs';
 import { consoleLog } from '../reporting/console_log';
 import type { Database } from '../storage/database';
+import { getClobClient } from '../utils/clob_client';
+import { Side, OrderType } from '@polymarket/clob-client-v2';
 
 export interface OrderPlacementResult {
   status: 'submitted' | 'filled' | 'rejected' | 'error';
@@ -18,7 +20,6 @@ export class PolymarketWallet {
   private static readonly MAX_TRADE_HISTORY = 10_000;
   private state: WalletState;
   private readonly trades: TradeRecord[] = [];
-  private readonly clobApi: string;
   private displayName: string = '';
   private readonly liveCfg: LiveTradingConfig;
   private readonly feeCfg: FeeConfig;
@@ -53,7 +54,6 @@ export class PolymarketWallet {
     this.liveCfg = liveCfg ?? PolymarketWallet.DEFAULT_LIVE_CFG;
     this.feeCfg = feeCfg ?? PolymarketWallet.DEFAULT_FEE_CFG;
     this.displayName = config.id;
-    this.clobApi = process.env.POLYMARKET_CLOB_API ?? 'https://clob.polymarket.com';
     this.state = {
       walletId: config.id,
       mode: 'LIVE',
@@ -144,16 +144,15 @@ export class PolymarketWallet {
     side: 'BUY' | 'SELL';
     price: number;
     size: number;
+    tokenId?: string;
   }): Promise<OrderPlacementResult> {
     const cost = request.price * request.size;
 
-    // ── Pre-flight checks (return result objects, don't throw) ──
+    // ── Pre-flight checks (fast, no I/O) ──
 
-    // 1. API key check
-    const apiKey = process.env.POLYMARKET_API_KEY;
-    if (!apiKey) {
-      logger.warn({ walletId: this.state.walletId }, 'API key not set — rejecting order');
-      return { status: 'rejected', orderId: null, filledSize: 0, reason: 'API key not set — cannot place LIVE order' };
+    // 1. tokenId required for V2
+    if (!request.tokenId) {
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: 'tokenId required for V2 order submission' };
     }
 
     // 2. Daily order limit
@@ -188,75 +187,44 @@ export class PolymarketWallet {
     // Reserve funds before async network call
     this.reserveBalance(cost);
 
-    /* ── Submit order to Polymarket CLOB API ── */
-    const orderId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 7. ClobClient — cached after first call
+    const client = await getClobClient();
+    if (!client) {
+      this.releaseReservation(cost);
+      logger.warn({ walletId: this.state.walletId }, 'ClobClient not available — rejecting order');
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: 'POLYMARKET_PRIVATE_KEY not set — cannot place LIVE order' };
+    }
 
-    const orderPayload = {
-      market: request.marketId,
-      side: request.side,
-      outcome: request.outcome,
-      price: request.price,
-      size: request.size,
-      type: 'limit',
-    };
+    /* ── Submit order via V2 SDK ── */
+    const fallbackOrderId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    let apiResponse: Response;
-    let attempt = 0;
-    const maxRetries = 2;
+    let sdkResponse: { orderID?: string; success?: boolean; errorMsg?: string } | null = null;
+    try {
+      sdkResponse = await client.createAndPostOrder(
+        {
+          tokenID: request.tokenId,
+          price: request.price,
+          size: request.size,
+          side: request.side === 'BUY' ? Side.BUY : Side.SELL,
+        },
+        { tickSize: '0.01' },
+        OrderType.GTC,
+      ) as { orderID?: string; success?: boolean; errorMsg?: string };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ walletId: this.state.walletId, error: msg }, 'LIVE order SDK error');
+      this.releaseReservation(cost);
+      return { status: 'error', orderId: null, filledSize: 0, reason: msg };
+    }
 
-    while (true) {
-      attempt++;
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 10_000);
-        try {
-          apiResponse = await fetch(`${this.clobApi}/order`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify(orderPayload),
-            signal: controller.signal,
-          });
-        } finally {
-          clearTimeout(timer);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error({ walletId: this.state.walletId, orderId, error: msg }, 'LIVE order network error');
-        this.releaseReservation(cost);
-        return { status: 'error', orderId: null, filledSize: 0, reason: 'network failure' };
-      }
-
-      if (!apiResponse.ok) {
-        // 4xx errors — don't retry
-        if (apiResponse.status >= 400 && apiResponse.status < 500) {
-          let errorBody = '';
-          try { errorBody = await apiResponse.text(); } catch { /* ignore */ }
-          logger.warn({ walletId: this.state.walletId, orderId, status: apiResponse.status }, 'LIVE order rejected by CLOB');
-          this.releaseReservation(cost);
-          return { status: 'rejected', orderId: null, filledSize: 0, reason: errorBody };
-        }
-        // 5xx errors — retry up to maxRetries
-        if (attempt >= maxRetries) {
-          let errorBody = '';
-          try { errorBody = await apiResponse.text(); } catch { /* ignore */ }
-          logger.error({ walletId: this.state.walletId, orderId, status: apiResponse.status, attempts: attempt }, 'LIVE order failed after retries');
-          this.releaseReservation(cost);
-          return { status: 'error', orderId: null, filledSize: 0, reason: errorBody };
-        }
-        // Continue retry loop
-        continue;
-      }
-      // Success
-      break;
+    if (sdkResponse && sdkResponse.success === false) {
+      logger.warn({ walletId: this.state.walletId, errorMsg: sdkResponse.errorMsg }, 'LIVE order rejected by CLOB');
+      this.releaseReservation(cost);
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: sdkResponse.errorMsg ?? 'order rejected' };
     }
 
     /* ── Order accepted ── */
-    let responseBody: { orderID?: string } = {};
-    try { responseBody = await apiResponse!.json() as { orderID?: string }; } catch { /* ignore */ }
-    const clobOrderId = responseBody.orderID ?? orderId;
+    const clobOrderId = sdkResponse?.orderID ?? fallbackOrderId;
 
     // Reservation stays held — applyFill() is the sole debit path.
     // releaseBalance() will free it when the order fills or is cancelled/timed-out.
@@ -323,7 +291,9 @@ export class PolymarketWallet {
     const walletAddress = (this.state as unknown as Record<string, unknown>)['walletAddress'] as string | undefined;
     if (!walletAddress) return;
 
-    const USDC_CONTRACT = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+    // pUSD (V2 collateral) — 18 decimals
+    const COLLATERAL_ADDRESS = process.env.POLYMARKET_COLLATERAL_ADDRESS ?? '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
+    const COLLATERAL_DECIMALS = parseInt(process.env.POLYMARKET_COLLATERAL_DECIMALS ?? '18', 10);
     const RPC = process.env.POLYGON_RPC ?? 'https://polygon-rpc.com';
 
     // ERC-20 balanceOf(address) call
@@ -336,12 +306,11 @@ export class PolymarketWallet {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jsonrpc: '2.0', method: 'eth_call', id: 1,
-          params: [{ to: USDC_CONTRACT, data }, 'latest'],
+          params: [{ to: COLLATERAL_ADDRESS, data }, 'latest'],
         }),
       });
       const body = await resp.json() as { result: string };
-      // USDC has 6 decimals
-      onChainBalance = Number(BigInt(body.result)) / 1e6;
+      onChainBalance = Number(BigInt(body.result)) / Math.pow(10, COLLATERAL_DECIMALS);
     } catch (err) {
       logger.warn({ walletId: this.state.walletId, err: String(err) }, 'reconcileBalance: RPC call failed');
       return;
@@ -353,7 +322,7 @@ export class PolymarketWallet {
     if (diff > 1) {
       logger.warn(
         { walletId: this.state.walletId, onChain: onChainBalance, expected, diff },
-        'reconcileBalance: on-chain balance differs from expected by more than 1 USDC',
+        'reconcileBalance: on-chain balance differs from expected by more than 1 pUSD',
       );
     }
   }

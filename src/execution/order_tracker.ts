@@ -4,16 +4,7 @@ import { PendingOrder } from '../types/order';
 import { OrderFill } from '../types';
 import { logger } from '../reporting/logs';
 import { notify } from '../reporting/notifier';
-import { fetchWithRetry } from '../utils/fetch_retry';
-import { CLOB_API_URL, getClobHeaders } from '../utils/clob_client';
-
-interface ClobOrderResponse {
-  status?: string;          // "MATCHED" | "UNMATCHED" | "CANCELLED"
-  size_matched?: number;
-  price?: number;
-  maker_amount?: number;
-  taker_amount?: number;
-}
+import type { ClobClient } from '@polymarket/clob-client-v2';
 
 export class OrderTracker {
   private readonly pending = new Map<string, PendingOrder>();
@@ -26,10 +17,8 @@ export class OrderTracker {
   constructor(
     private readonly db: Database,
     private readonly walletManager: WalletManager,
-    private readonly apiKey: string,
+    private readonly clobClient: ClobClient,
   ) {
-    // maxOrderAgeMs derived from live_trading config — passed in via apiKey holder.
-    // Default to 120s if not derivable.
     this.maxOrderAgeMs = 120_000;
   }
 
@@ -128,29 +117,16 @@ export class OrderTracker {
         continue;
       }
 
-      // Poll status
+      // Poll status via V2 SDK
       try {
-        const res = await fetchWithRetry(
-          `${CLOB_API_URL}/order/${order.orderId}`,
-          { headers: getClobHeaders() },
-          2,
-          10_000,
-        );
-
-        if (!res.ok) {
-          order.checkCount++;
-          order.lastCheckedAt = new Date().toISOString();
-          this.db.savePendingOrder(order);
-          logger.warn({ orderId: order.orderId, status: res.status }, 'OrderTracker: status check failed');
-          continue;
-        }
-
-        const data = await res.json() as ClobOrderResponse;
+        const data = await this.clobClient.getOrder(order.orderId);
         const clobStatus = (data.status ?? '').toUpperCase();
+        const filledSizeStr = data.size_matched ?? '0';
+        const priceStr = data.price ?? String(order.submission.price);
 
         if (clobStatus === 'MATCHED') {
-          const filledSize = data.size_matched ?? order.submission.size;
-          const fillPrice = data.price ?? order.submission.price;
+          const filledSize = Number(filledSizeStr) || order.submission.size;
+          const fillPrice = Number(priceStr) || order.submission.price;
           this.applyConfirmedFill(order, filledSize, fillPrice, 'filled');
         } else if (clobStatus === 'CANCELLED') {
           logger.warn({ orderId: order.orderId }, `OrderTracker: order ${order.orderId} was cancelled by exchange`);
@@ -159,9 +135,9 @@ export class OrderTracker {
           cancelledWallet?.releaseBalance?.(order.submission.price * order.submission.size);
           this.removePending(order.orderId);
         } else if (clobStatus === 'PARTIALLY_MATCHED') {
-          const filledSize = data.size_matched ?? 0;
+          const filledSize = Number(filledSizeStr) || 0;
           if (filledSize > 0) {
-            const fillPrice = data.price ?? order.submission.price;
+            const fillPrice = Number(priceStr) || order.submission.price;
             this.applyConfirmedFill(order, filledSize, fillPrice, 'partially_filled');
             // Update the remaining size in the pending order
             order.submission = { ...order.submission, size: order.submission.size - filledSize };
@@ -228,12 +204,7 @@ export class OrderTracker {
 
   private async cancelOrder(order: PendingOrder, reason: string): Promise<void> {
     try {
-      await fetchWithRetry(
-        `${CLOB_API_URL}/order/${order.orderId}`,
-        { method: 'DELETE', headers: getClobHeaders() },
-        2,
-        10_000,
-      );
+      await this.clobClient.cancelOrder({ orderID: order.orderId });
       logger.info({ orderId: order.orderId, reason }, `OrderTracker: cancel request sent for order ${order.orderId}`);
     } catch (err) {
       logger.warn({ orderId: order.orderId, err: err instanceof Error ? err.message : String(err) }, 'OrderTracker: cancel request failed');

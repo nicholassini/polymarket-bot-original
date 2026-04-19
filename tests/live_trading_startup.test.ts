@@ -3,6 +3,17 @@ import { PolymarketWallet } from '../src/wallets/polymarket_wallet';
 import { validateLiveCredentials } from '../src/core/config_validator';
 import type { WalletConfig, LiveTradingConfig } from '../src/types';
 
+// Mock getClobClient so validateLiveCredentials can be tested without a real private key
+vi.mock('../src/utils/clob_client', () => ({
+  getClobClient: vi.fn(),
+  _resetClobClient: vi.fn(),
+  CLOB_API_URL: 'https://clob.polymarket.com',
+  getClobHeaders: vi.fn().mockReturnValue({}),
+  hasClobApiKey: vi.fn().mockReturnValue(false),
+}));
+
+import { getClobClient } from '../src/utils/clob_client';
+
 const liveCfg: LiveTradingConfig = {
   maxSingleOrderCost: 10,
   maxPendingOrders: 3,
@@ -34,14 +45,9 @@ describe('Reconciliation activation', () => {
     const wallet = new PolymarketWallet(walletConfig, 'momentum', undefined, liveCfg);
     wallet.startReconciliation(300_000);
 
-    // Should not fire immediately
     expect(reconcileSpy).not.toHaveBeenCalled();
-
-    // After one interval, should fire once
     vi.advanceTimersByTime(300_000);
     expect(reconcileSpy).toHaveBeenCalledTimes(1);
-
-    // After another interval, should fire again
     vi.advanceTimersByTime(300_000);
     expect(reconcileSpy).toHaveBeenCalledTimes(2);
 
@@ -57,63 +63,47 @@ describe('Reconciliation activation', () => {
     expect(reconcileSpy).toHaveBeenCalledTimes(1);
 
     wallet.stopReconciliation();
-    vi.advanceTimersByTime(900_000); // 3 more intervals
-    expect(reconcileSpy).toHaveBeenCalledTimes(1); // no new calls after stop
+    vi.advanceTimersByTime(900_000);
+    expect(reconcileSpy).toHaveBeenCalledTimes(1);
   });
 
   it('startReconciliation is idempotent — second call is a no-op', () => {
     const wallet = new PolymarketWallet(walletConfig, 'momentum', undefined, liveCfg);
     wallet.startReconciliation(300_000);
-    wallet.startReconciliation(300_000); // second call ignored
+    wallet.startReconciliation(300_000);
     wallet.stopReconciliation();
-    // Should not throw
   });
 });
 
-describe('API key validation at startup', () => {
-  beforeEach(() => {
-    process.env.POLYMARKET_API_KEY = 'test-key';
-  });
+describe('V2 credential validation at startup', () => {
   afterEach(() => {
-    delete process.env.POLYMARKET_API_KEY;
-    vi.restoreAllMocks();
+    vi.resetAllMocks();
   });
 
-  it('throws when CLOB API returns 401 (invalid key)', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+  it('throws when getClobClient returns null (no private key configured)', async () => {
+    vi.mocked(getClobClient).mockResolvedValue(null as never);
 
     await expect(validateLiveCredentials('https://clob.polymarket.com'))
-      .rejects.toThrow(/CLOB API key validation failed.*401/);
+      .rejects.toThrow(/getClobClient.*returned null/);
   });
 
-  it('throws when CLOB API returns 403 (forbidden key)', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }));
+  it('throws on getServerTime failure (CLOB unreachable)', async () => {
+    const mockClient = {
+      getServerTime: vi.fn().mockRejectedValue(new Error('connection refused')),
+    };
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     await expect(validateLiveCredentials('https://clob.polymarket.com'))
-      .rejects.toThrow(/CLOB API key validation failed.*403/);
+      .rejects.toThrow(/CLOB V2 connectivity check failed/);
   });
 
-  it('throws on network failure', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
-
-    await expect(validateLiveCredentials('https://clob.polymarket.com'))
-      .rejects.toThrow(/CLOB API connectivity check failed/);
-  });
-
-  it('resolves when CLOB API returns 200 (valid key)', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+  it('resolves when getClobClient succeeds and getServerTime works', async () => {
+    const mockClient = {
+      getServerTime: vi.fn().mockResolvedValue(Date.now()),
+    };
+    vi.mocked(getClobClient).mockResolvedValue(mockClient as never);
 
     await expect(validateLiveCredentials('https://clob.polymarket.com'))
       .resolves.toBeUndefined();
-  });
-
-  it('resolves without calling fetch when API key is not set', async () => {
-    delete process.env.POLYMARKET_API_KEY;
-    const mockFetch = vi.fn();
-    vi.stubGlobal('fetch', mockFetch);
-
-    await expect(validateLiveCredentials('https://clob.polymarket.com'))
-      .resolves.toBeUndefined();
-    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

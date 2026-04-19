@@ -1,42 +1,36 @@
 import { AppConfig } from '../types';
 import { listStrategies } from '../strategies/registry';
 import { logger } from '../reporting/logs';
+import { getClobClient } from '../utils/clob_client';
 
 /**
- * Ping the CLOB API with the configured API key to verify credentials at startup.
- * Throws if the key is explicitly rejected (401/403) or the server is unreachable.
- * Only call this when live trading is enabled.
+ * Validate live credentials at startup by initializing the V2 ClobClient.
+ * The client calls createOrDeriveApiKey() internally, which confirms the
+ * private key is valid and the CLOB is reachable.
  */
-export async function validateLiveCredentials(clobApi: string): Promise<void> {
-  const apiKey = process.env.POLYMARKET_API_KEY;
-  if (!apiKey) return; // already caught by validateConfig
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+export async function validateLiveCredentials(_clobApi: string): Promise<void> {
+  const client = await getClobClient();
+  if (!client) {
+    throw new Error('CLOB V2 credential check failed: getClobClient() returned null — is POLYMARKET_PRIVATE_KEY set?');
+  }
   try {
-    const resp = await fetch(`${clobApi}/`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: controller.signal,
-    });
-    if (resp.status === 401 || resp.status === 403) {
-      throw new Error(`CLOB API key validation failed: HTTP ${resp.status} — check POLYMARKET_API_KEY`);
-    }
-    logger.info({ status: resp.status }, 'CLOB API credentials validated at startup');
+    await client.getServerTime();
+    logger.info('CLOB V2 credentials validated at startup');
   } catch (err) {
-    if (err instanceof Error && err.message.startsWith('CLOB API key')) throw err;
-    throw new Error(`CLOB API connectivity check failed: ${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    clearTimeout(timer);
+    throw new Error(`CLOB V2 connectivity check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
 export function validateConfig(config: AppConfig): void {
   const errors: string[] = [];
 
-  // Live trading requires an API key
+  // Live trading requires a private key for V2 SDK auth
   if (config.environment.enableLiveTrading) {
-    if (!process.env.POLYMARKET_API_KEY || process.env.POLYMARKET_API_KEY.trim() === '') {
-      errors.push('enableLiveTrading is true but POLYMARKET_API_KEY is not set');
+    const pk = process.env.POLYMARKET_PRIVATE_KEY;
+    if (!pk || pk.trim() === '') {
+      errors.push('enableLiveTrading is true but POLYMARKET_PRIVATE_KEY is not set');
+    } else if (!pk.trim().startsWith('0x')) {
+      errors.push('POLYMARKET_PRIVATE_KEY must start with 0x');
     }
   }
 

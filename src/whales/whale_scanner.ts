@@ -2575,9 +2575,9 @@ export class WhaleScanner {
         if (res.ok) {
           const json = await res.json() as { result?: string };
           if (json.result) {
-            /* USDC on Polygon has 6 decimals */
+            /* pUSD has 18 decimals */
             const raw = BigInt(json.result);
-            const balance = Number(raw) / 1_000_000;
+            const balance = Number(raw) / 1e18;
             this.walletBalances.set(whale.address, balance);
           }
         } else {

@@ -34,6 +34,7 @@ import type { WhaleTrackingConfig, ScannerConfig } from './whales/whale_types';
 import { TradingDB } from './storage/trading_db';
 import { Database } from './storage/database';
 import { PolymarketWallet } from './wallets/polymarket_wallet';
+import { getClobClient } from './utils/clob_client';
 
 const program = new Command();
 const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -253,8 +254,11 @@ program
     let orderTracker: OrderTracker | null = null;
 
     if (hasLiveWallets) {
-      const apiKey = process.env.POLYMARKET_API_KEY ?? '';
-      orderTracker = new OrderTracker(db, walletManager, apiKey);
+      const clobClient = await getClobClient();
+      if (!clobClient) {
+        throw new Error('Live wallets are configured but ClobClient could not be initialized — check POLYMARKET_PRIVATE_KEY');
+      }
+      orderTracker = new OrderTracker(db, walletManager, clobClient);
       orderTracker.setOrderTimeoutMs(config.liveTrading.orderTimeoutSeconds * 1000);
       tradeExecutor.setOrderTracker(orderTracker);
 
