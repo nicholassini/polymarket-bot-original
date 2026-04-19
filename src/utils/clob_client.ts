@@ -4,9 +4,10 @@
  * instead of hardcoding URLs and headers.
  */
 
-import { ClobClient, Chain } from '@polymarket/clob-client-v2';
+import type { ClobClient } from '@polymarket/clob-client-v2';
 import { Wallet } from 'ethers';
 import { logger } from '../reporting/logs';
+import { loadClobSdk } from './clob_sdk';
 
 export const CLOB_API_URL = process.env.CLOB_API_URL ?? 'https://clob.polymarket.com';
 
@@ -34,6 +35,7 @@ async function _init(): Promise<ClobClient | null> {
   }
 
   try {
+    const { ClobClient, Chain } = await loadClobSdk();
     const wallet = new Wallet(privateKey);
     const host = process.env.POLYMARKET_CLOB_API ?? CLOB_API_URL;
 

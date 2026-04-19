@@ -3,7 +3,7 @@ import { logger } from '../reporting/logs';
 import { consoleLog } from '../reporting/console_log';
 import type { Database } from '../storage/database';
 import { getClobClient } from '../utils/clob_client';
-import { Side, OrderType } from '@polymarket/clob-client-v2';
+import { loadClobSdk } from '../utils/clob_sdk';
 
 export interface OrderPlacementResult {
   status: 'submitted' | 'filled' | 'rejected' | 'error';
@@ -198,6 +198,7 @@ export class PolymarketWallet {
     /* ── Submit order via V2 SDK ── */
     const fallbackOrderId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const { Side, OrderType } = await loadClobSdk();
     let sdkResponse: { orderID?: string; success?: boolean; errorMsg?: string } | null = null;
     try {
       sdkResponse = await client.createAndPostOrder(
