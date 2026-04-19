@@ -58,10 +58,11 @@ export class WalletManager {
     }
 
     if (config.mode === 'LIVE' && !enableLive) {
-      logger.warn(
+      logger.error(
         { walletId: config.id },
         'LIVE trading requested but ENABLE_LIVE_TRADING is false — falling back to PAPER mode',
       );
+      console.error(`[WalletManager] WARNING: wallet "${config.id}" requested LIVE mode but ENABLE_LIVE_TRADING is not enabled — running as PAPER`);
       config = { ...config, mode: 'PAPER' };
     }
 

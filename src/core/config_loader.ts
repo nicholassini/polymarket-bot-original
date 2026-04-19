@@ -19,6 +19,7 @@ interface RawConfig {
     strategy: string;
     capital?: number;
     risk_limits?: RawRiskLimits;
+    wallet_address?: string;
   }>;
   strategy_config?: Record<string, Record<string, unknown>>;
   polymarket?: { gamma_api?: string; clob_api?: string };
@@ -53,6 +54,7 @@ export function loadConfig(path: string): AppConfig {
       ...DEFAULT_LIMITS,
       ...toRiskLimits(wallet.risk_limits),
     },
+    ...(wallet.wallet_address ? { walletAddress: wallet.wallet_address } : {}),
   }));
 
   const liveRequested = Boolean(parsed.environment?.enable_live_trading ?? false);

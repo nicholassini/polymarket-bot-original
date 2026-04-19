@@ -15,11 +15,13 @@ import fs from 'fs';
 import path from 'path';
 import YAML from 'yaml';
 import { loadConfig } from './core/config_loader';
+import { validateConfig, validateLiveCredentials } from './core/config_validator';
 import { WalletManager } from './wallets/wallet_manager';
 import { KillSwitch } from './risk/kill_switch';
 import { RiskEngine } from './risk/risk_engine';
 import { TradeExecutor } from './execution/trade_executor';
 import { OrderRouter } from './execution/order_router';
+import { OrderTracker } from './execution/order_tracker';
 import { Engine } from './core/engine';
 import { listStrategies } from './strategies/registry';
 import { computeAllPerformance } from './reporting/performance';
@@ -30,6 +32,8 @@ import { WhaleAPI } from './whales/whale_api';
 import { DEFAULT_WHALE_CONFIG, DEFAULT_SCANNER_CONFIG, DEFAULT_API_POOL_CONFIG, DEFAULT_FAST_SCAN_CONFIG, DEFAULT_EXCHANGE_SOURCES } from './whales/whale_types';
 import type { WhaleTrackingConfig, ScannerConfig } from './whales/whale_types';
 import { TradingDB } from './storage/trading_db';
+import { Database } from './storage/database';
+import { PolymarketWallet } from './wallets/polymarket_wallet';
 
 const program = new Command();
 const dataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -196,8 +200,18 @@ program
   .option('-c, --config <path>', 'Config path', 'config.yaml')
   .action(async (options: { config: string }) => {
     const config = loadConfig(options.config);
+    validateConfig(config);
+
+    // Validate live credentials at startup if live trading is enabled
+    if (config.environment.enableLiveTrading) {
+      await validateLiveCredentials(config.polymarket.clobApi);
+    }
+
+    const db = new Database(path.resolve(dataDir, 'orders.db'));
+    db.initSchema();
+
     const tradingDb = new TradingDB();
-    const walletManager = new WalletManager();
+    const walletManager = new WalletManager(db);
     walletManager.setTradingDb(tradingDb);
     for (const wallet of config.wallets) {
       walletManager.registerWallet(wallet, wallet.strategy, config.environment.enableLiveTrading, config.liveTrading, config.fees);
@@ -205,6 +219,7 @@ program
     const dashboardPort = Number(process.env.DASHBOARD_PORT ?? 3000);
     const dashboardServer = new DashboardServer(walletManager, dashboardPort);
     dashboardServer.setFeeCfg(config.fees);
+    dashboardServer.setLiveCfg(config.liveTrading);
 
     /* ── Whale Tracking Engine ── */
     const rawConfig = YAML.parse(fs.readFileSync(options.config, 'utf8')) as Record<string, unknown>;
@@ -229,13 +244,55 @@ program
     dashboardServer.start();
     const killSwitch = new KillSwitch();
     const riskEngine = new RiskEngine(killSwitch);
-    const orderRouter = new OrderRouter(walletManager, riskEngine, new TradeExecutor());
+    const tradeExecutor = new TradeExecutor();
+    const orderRouter = new OrderRouter(walletManager, riskEngine, tradeExecutor);
+
+    // Wire OrderTracker only when live wallets exist
+    const hasLiveWallets = config.environment.enableLiveTrading &&
+      config.wallets.some((w) => w.mode === 'LIVE');
+    let orderTracker: OrderTracker | null = null;
+
+    if (hasLiveWallets) {
+      const apiKey = process.env.POLYMARKET_API_KEY ?? '';
+      orderTracker = new OrderTracker(db, walletManager, apiKey);
+      orderTracker.setOrderTimeoutMs(config.liveTrading.orderTimeoutSeconds * 1000);
+      tradeExecutor.setOrderTracker(orderTracker);
+
+      // Inject orderTracker into each live wallet so pending-order count is enforced
+      for (const wConfig of config.wallets) {
+        if (wConfig.mode === 'LIVE') {
+          const wallet = walletManager.getWallet(wConfig.id);
+          if (wallet instanceof PolymarketWallet) {
+            wallet.setOrderTracker(orderTracker);
+          }
+        }
+      }
+    }
 
     const engine = new Engine(config, walletManager, orderRouter);
     await engine.initialize();
     dashboardServer.setEngine(engine);
     dashboardServer.restoreWallets();
     engine.start();
+
+    if (orderTracker) {
+      orderTracker.start();
+      logger.info('OrderTracker started');
+    }
+
+    // Start periodic on-chain balance reconciliation for live wallets
+    const liveWalletsForReconciliation: PolymarketWallet[] = [];
+    if (config.environment.enableLiveTrading) {
+      for (const wConfig of config.wallets) {
+        if (wConfig.mode === 'LIVE') {
+          const wallet = walletManager.getWallet(wConfig.id);
+          if (wallet instanceof PolymarketWallet) {
+            wallet.startReconciliation(300_000);
+            liveWalletsForReconciliation.push(wallet);
+          }
+        }
+      }
+    }
 
     writeState({ status: 'running', startedAt: new Date().toISOString() });
 
@@ -249,10 +306,20 @@ program
       // 1. Stop accepting new trades
       engine.stop();
 
-      // 2. Stop dashboard server (close SSE clients, stop listening)
+      // 2. Cancel pending live orders and stop tracking
+      if (orderTracker) {
+        orderTracker.stop();
+      }
+
+      // 3. Stop on-chain reconciliation
+      for (const wallet of liveWalletsForReconciliation) {
+        wallet.stopReconciliation();
+      }
+
+      // 4. Stop dashboard server (close SSE clients, stop listening)
       dashboardServer.stop();
 
-      // 3. Flush state
+      // 5. Flush state
       writeState({ status: 'stopped', stoppedAt: new Date().toISOString(), reason: signal });
 
       logger.info('Graceful shutdown complete');

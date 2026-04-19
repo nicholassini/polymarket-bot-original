@@ -11,7 +11,7 @@ export interface OrderPlacementResult {
 }
 
 interface OrderTrackerRef {
-  getPendingForWallet(walletId: string): string[];
+  getPendingForWallet(walletId: string): unknown[];
 }
 
 export class PolymarketWallet {
@@ -258,9 +258,8 @@ export class PolymarketWallet {
     try { responseBody = await apiResponse!.json() as { orderID?: string }; } catch { /* ignore */ }
     const clobOrderId = responseBody.orderID ?? orderId;
 
-    // Release reservation and deduct confirmed cost from balance
-    this.releaseReservation(cost);
-    this.state.availableBalance -= cost;
+    // Reservation stays held — applyFill() is the sole debit path.
+    // releaseBalance() will free it when the order fills or is cancelled/timed-out.
 
     this.dailyOrderCount++;
 
@@ -275,7 +274,7 @@ export class PolymarketWallet {
       cost,
       realizedPnl: 0,
       cumulativePnl: this.state.realizedPnl,
-      balanceAfter: this.state.availableBalance,
+      balanceAfter: this.getAvailableBalance(),
       timestamp: Date.now(),
     });
 

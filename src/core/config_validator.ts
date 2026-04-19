@@ -2,6 +2,34 @@ import { AppConfig } from '../types';
 import { listStrategies } from '../strategies/registry';
 import { logger } from '../reporting/logs';
 
+/**
+ * Ping the CLOB API with the configured API key to verify credentials at startup.
+ * Throws if the key is explicitly rejected (401/403) or the server is unreachable.
+ * Only call this when live trading is enabled.
+ */
+export async function validateLiveCredentials(clobApi: string): Promise<void> {
+  const apiKey = process.env.POLYMARKET_API_KEY;
+  if (!apiKey) return; // already caught by validateConfig
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const resp = await fetch(`${clobApi}/`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(`CLOB API key validation failed: HTTP ${resp.status} — check POLYMARKET_API_KEY`);
+    }
+    logger.info({ status: resp.status }, 'CLOB API credentials validated at startup');
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('CLOB API key')) throw err;
+    throw new Error(`CLOB API connectivity check failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function validateConfig(config: AppConfig): void {
   const errors: string[] = [];
 

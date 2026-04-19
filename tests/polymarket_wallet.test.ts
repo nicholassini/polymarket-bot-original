@@ -423,3 +423,100 @@ describe('PolymarketWallet reconcileBalance', () => {
     vi.useRealTimers();
   });
 });
+
+describe('PolymarketWallet — double-debit prevention (Option A)', () => {
+  beforeEach(() => {
+    process.env.POLYMARKET_API_KEY = 'test-api-key';
+  });
+  afterEach(() => {
+    delete process.env.POLYMARKET_API_KEY;
+    vi.restoreAllMocks();
+  });
+
+  it('does not debit gross balance at submission — reservation only', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
+    }));
+
+    const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
+    const result = await wallet.placeOrder(baseRequest); // cost = 0.5 * 10 = 5
+
+    expect(result.status).toBe('submitted');
+    // Gross balance is NOT yet decremented — only reserved
+    expect(wallet.getState().availableBalance).toBe(1000);
+    // Effective available balance = gross - reserved = 1000 - 5 = 995
+    expect(wallet.getAvailableBalance()).toBe(995);
+  });
+
+  it('debits balance exactly once via applyFill after submission', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
+    }));
+
+    const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
+    const result = await wallet.placeOrder(baseRequest); // cost = 5, reserved
+
+    wallet.applyFill({
+      orderId: result.orderId!,
+      marketId: baseRequest.marketId,
+      outcome: baseRequest.outcome,
+      side: baseRequest.side,
+      price: baseRequest.price,
+      size: baseRequest.size,
+      timestamp: Date.now(),
+    });
+
+    // Reservation released + balance debited exactly once by cost (+ fee = 0)
+    expect(wallet.getState().availableBalance).toBe(995);
+    expect(wallet.getAvailableBalance()).toBe(995); // reserved = 0
+  });
+
+  it('releases reservation and restores balance to full on cancel', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
+    }));
+
+    const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
+    await wallet.placeOrder(baseRequest); // cost = 5, reserved
+
+    expect(wallet.getAvailableBalance()).toBe(995);
+
+    // Simulate OrderTracker calling releaseBalance on cancel
+    const cost = baseRequest.price * baseRequest.size; // 5
+    wallet.releaseBalance(cost);
+
+    // Reservation released, no debit — full balance restored
+    expect(wallet.getState().availableBalance).toBe(1000);
+    expect(wallet.getAvailableBalance()).toBe(1000);
+  });
+
+  it('debits only filled portion on partial fill, keeps remainder reserved', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ orderID: 'order-1' }),
+    }));
+
+    const wallet = new PolymarketWallet(baseConfig, 'momentum', undefined, liveCfg);
+    await wallet.placeOrder(baseRequest); // full order: size=10, cost=5, reserved=5
+
+    // Partial fill: 6 out of 10 shares, cost = 0.5 * 6 = 3
+    wallet.applyFill({
+      orderId: 'order-1',
+      marketId: baseRequest.marketId,
+      outcome: baseRequest.outcome,
+      side: baseRequest.side,
+      price: 0.5,
+      size: 6,
+      timestamp: Date.now(),
+    });
+
+    // 6 shares filled: releaseReservation(3) + balance -= 3 (fee=0)
+    // 4 shares still reserved: reserved = 5 - 3 = 2
+    expect(wallet.getState().availableBalance).toBe(997); // 1000 - 3
+    expect(wallet.getAvailableBalance()).toBe(995);       // 997 - 2
+
+    // Release the remaining 4-share reservation (as OrderTracker would on cancel)
+    wallet.releaseBalance(0.5 * 4); // release 2
+    expect(wallet.getState().availableBalance).toBe(997);
+    expect(wallet.getAvailableBalance()).toBe(997); // reserved fully released
+  });
+});

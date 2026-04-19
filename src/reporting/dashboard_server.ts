@@ -8,7 +8,7 @@ import { listStrategies } from '../strategies/registry';
 import { logger } from './logs';
 import { consoleLog } from './console_log';
 import type { WhaleAPI } from '../whales/whale_api';
-import type { FeeConfig } from '../types';
+import type { FeeConfig, LiveTradingConfig } from '../types';
 import type { Engine } from '../core/engine';
 import { CopyTradeStrategy } from '../strategies/copy_trading/copy_trade_strategy';
 import { UserDB } from '../auth/user_db';
@@ -845,6 +845,7 @@ export class DashboardServer {
   private server?: http.Server;
   private whaleApi?: WhaleAPI;
   private feeCfg?: FeeConfig;
+  private liveCfg?: LiveTradingConfig;
   private engine?: Engine;
   private sseClients = new Map<http.ServerResponse, string>(); // response → userId
   private sseInterval?: ReturnType<typeof setInterval>;
@@ -871,6 +872,10 @@ export class DashboardServer {
 
   setFeeCfg(cfg: FeeConfig): void {
     this.feeCfg = cfg;
+  }
+
+  setLiveCfg(cfg: LiveTradingConfig): void {
+    this.liveCfg = cfg;
   }
 
   setEngine(engine: Engine): void {
@@ -907,7 +912,7 @@ export class DashboardServer {
 
       const tradingDb = this.walletManager.getTradingDb();
       const wallet = cfg.mode === 'LIVE'
-        ? new PolymarketWallet(walletConfig, cfg.strategy)
+        ? new PolymarketWallet(walletConfig, cfg.strategy, undefined, this.liveCfg, this.feeCfg)
         : new PaperWallet(walletConfig, cfg.strategy, tradingDb, this.feeCfg);
 
       this.walletManager.addWallet(wallet);
@@ -1826,7 +1831,7 @@ export class DashboardServer {
         },
       };
       const wallet = mode === 'LIVE'
-        ? new PolymarketWallet(walletConfig, strategy)
+        ? new PolymarketWallet(walletConfig, strategy, undefined, this.liveCfg, this.feeCfg)
         : new PaperWallet(walletConfig, strategy, this.walletManager.getTradingDb(), this.feeCfg);
       this.walletManager.addWallet(wallet);
 
@@ -2105,7 +2110,7 @@ export class DashboardServer {
           },
         };
         const wallet = mode === 'LIVE'
-          ? new PolymarketWallet(walletConfig, 'custom_composite')
+          ? new PolymarketWallet(walletConfig, 'custom_composite', undefined, this.liveCfg, this.feeCfg)
           : new PaperWallet(walletConfig, 'custom_composite', this.walletManager.getTradingDb(), this.feeCfg);
         this.walletManager.addWallet(wallet);
         this.userDb.assignWallet(walletId, userId);
