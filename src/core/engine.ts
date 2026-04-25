@@ -294,6 +294,17 @@ export class Engine {
     }
 
     const orders = await runner.strategy.sizePositions(signals);
+     // Resolve V2 tokenId from market data for each order
+    for (const order of orders) {
+      if (!order.tokenId) {
+        const market = this.stream.getMarket(order.marketId);
+        if (market?.clobTokenIds?.length) {
+          order.tokenId = order.outcome === 'YES'
+            ? market.clobTokenIds[0]
+            : market.clobTokenIds[1];
+        }
+      }
+    }
     if (orders.length > 0) {
       consoleLog.info('ORDER', `[${runner.strategy.name}] Sized ${orders.length} order(s) for wallet ${runner.walletId}`, {
         walletId: runner.walletId,
@@ -338,6 +349,15 @@ export class Engine {
 
     /* ── Route exit orders produced by managePositions() ── */
     const exitOrders = runner.strategy.drainExitOrders();
+    // Resolve V2 tokenId for exit orders
+    for (const exitOrder of exitOrders) {
+      if (!exitOrder.tokenId) {
+        const market = this.stream.getMarket(exitOrder.marketId);
+        if (market?.clobTokenIds?.length) {
+          exitOrder.tokenId = exitOrder.outcome === 'YES' ? market.clobTokenIds[0] : market.clobTokenIds[1];
+        }
+      }
+    }
     if (exitOrders.length > 0) {
       consoleLog.info('ORDER', `[${runner.strategy.name}] ${exitOrders.length} exit order(s) for wallet ${runner.walletId}`, {
         walletId: runner.walletId,

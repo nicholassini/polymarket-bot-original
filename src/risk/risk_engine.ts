@@ -62,7 +62,7 @@ export class RiskEngine {
     }
 
     /* ── Rate limiting: max orders per minute per wallet ── */
-    const rateLimit = wallet.mode === 'PAPER' ? 120 : 20;
+    const rateLimit = wallet.mode === 'PAPER' ? 120 : 60;
     const now = Date.now();
     const stamps = this.orderTimestamps.get(wallet.walletId) ?? [];
     const recentStamps = stamps.filter((t) => now - t < 60_000);

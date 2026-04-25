@@ -211,6 +211,7 @@ export class PolymarketWallet {
         { tickSize: '0.01' },
         OrderType.GTC,
       ) as { orderID?: string; success?: boolean; errorMsg?: string };
+      logger.info({ walletId: this.state.walletId, sdkResponse: JSON.stringify(sdkResponse) }, 'LIVE order SDK raw response');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ walletId: this.state.walletId, error: msg }, 'LIVE order SDK error');

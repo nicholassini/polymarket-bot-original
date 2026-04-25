@@ -20,6 +20,7 @@ export class TradeExecutor {
       side: order.side,
       price: order.price,
       size: order.size,
+      tokenId: order.tokenId,
     }) as { status?: string; orderId?: string | null } | null | undefined;
 
     if (result?.status === 'submitted' && result.orderId && this.orderTracker) {

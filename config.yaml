@@ -1,5 +1,5 @@
 environment:
-  enable_live_trading: false
+  enable_live_trading: true
 
 fees:
   taker_fee_rate: 0.02
@@ -12,7 +12,18 @@ live_trading:
   order_timeout_seconds: 120
   min_balance_reserve: 0
 
-wallets: []
+wallets:
+  - id: live_user_defined_1
+    mode: LIVE
+    strategy: user_defined
+    capital: 50
+    wallet_address: "0x713Df3DDcA8E236A1d5cdf985b0c643C992c8935"
+    risk_limits:
+      max_position_size: 5
+      max_exposure_per_market: 5
+      max_daily_loss: 3
+      max_open_trades: 10
+      max_drawdown: 0.10
 
 strategy_config:
   cross_market_arbitrage:

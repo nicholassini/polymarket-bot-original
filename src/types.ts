@@ -65,6 +65,7 @@ export interface OrderRequest {
   price: number;
   size: number;
   strategy: string;
+  tokenId?: string;
 }
 
 export interface OrderFill {

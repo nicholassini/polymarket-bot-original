@@ -14,6 +14,7 @@ export interface ExecutionWallet {
     side: 'BUY' | 'SELL';
     price: number;
     size: number;
+    tokenId?: string;
   }): Promise<unknown>;
   updateBalance(delta: number): void;
   /** Optional display name for the dashboard (defaults to walletId) */
