@@ -33,6 +33,7 @@ import { DEFAULT_WHALE_CONFIG, DEFAULT_SCANNER_CONFIG, DEFAULT_API_POOL_CONFIG, 
 import type { WhaleTrackingConfig, ScannerConfig } from './whales/whale_types';
 import { TradingDB } from './storage/trading_db';
 import { Database } from './storage/database';
+import { closeTradesDB } from './storage/trades_db';
 import { PolymarketWallet } from './wallets/polymarket_wallet';
 import { getClobClient } from './utils/clob_client';
 
@@ -323,7 +324,10 @@ program
       // 4. Stop dashboard server (close SSE clients, stop listening)
       dashboardServer.stop();
 
-      // 5. Flush state
+      // 5. Close trades DB
+      closeTradesDB();
+
+      // 6. Flush state
       writeState({ status: 'stopped', stoppedAt: new Date().toISOString(), reason: signal });
 
       logger.info('Graceful shutdown complete');

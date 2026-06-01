@@ -66,11 +66,17 @@ export interface OrderRequest {
   size: number;
   strategy: string;
   tokenId?: string;
+  /** CTF condition ID — required for reconciler win/loss check and CTF.redeemPositions calls. */
+  conditionId?: string;
 }
 
 export interface OrderFill {
   orderId: string;
   marketId: string;
+  tokenId?: string;
+  /** CTF condition ID propagated from order submission — used by reconciler. */
+  conditionId?: string;
+  txHash?: string;
   outcome: OrderOutcome;
   side: OrderSide;
   price: number;
@@ -104,6 +110,8 @@ export interface MarketData {
   oneDayPriceChange?: number;
   /** 1-week price change reported by Gamma */
   oneWeekPriceChange?: number;
+  /** CTF condition ID — required for reconciler position lookup. */
+  conditionId?: string;
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -159,6 +167,10 @@ export interface Position {
   size: number;
   avgPrice: number;
   realizedPnl: number;
+  /** CLOB token ID — populated when position is opened from a live fill. */
+  tokenId?: string;
+  /** CTF condition ID — populated when position is opened from a live fill, used by reconciler. */
+  conditionId?: string;
 }
 
 export interface WalletState {

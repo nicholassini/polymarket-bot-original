@@ -16,16 +16,19 @@ wallets:
   - id: live_user_defined_1
     mode: LIVE
     strategy: user_defined
-    capital: 50
+    capital: 36
     wallet_address: "0x713Df3DDcA8E236A1d5cdf985b0c643C992c8935"
     risk_limits:
       max_position_size: 5
       max_exposure_per_market: 5
       max_daily_loss: 3
-      max_open_trades: 10
+      max_open_trades: 18
       max_drawdown: 0.10
 
 strategy_config:
+  user_defined:
+    minLiquidity: 5000
+    maxDaysToResolution: 7
   cross_market_arbitrage:
     min_edge: 0.03
   mispricing_arbitrage:

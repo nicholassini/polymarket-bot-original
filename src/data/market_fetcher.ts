@@ -21,6 +21,8 @@ interface GammaMarket {
   /** 1-day and 1-week price movements */
   oneDayPriceChange?: number;
   oneWeekPriceChange?: number;
+  /** CTF condition ID (camelCase from Gamma response) */
+  conditionId?: string;
   /** Nested events array – first entry carries event metadata */
   events?: Array<{
     id?: string;
@@ -207,6 +209,7 @@ export class MarketFetcher {
           seriesSlug: m.events?.[0]?.series?.[0]?.slug ?? undefined,
           oneDayPriceChange: m.oneDayPriceChange ?? undefined,
           oneWeekPriceChange: m.oneWeekPriceChange ?? undefined,
+          conditionId: m.conditionId ?? undefined,
         });
       } catch {
         logger.warn({ marketId: m.id }, 'Skipping unparseable market');

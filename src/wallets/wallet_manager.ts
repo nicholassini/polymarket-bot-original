@@ -1,3 +1,4 @@
+import type { Signer } from 'ethers';
 import { PaperWallet } from './paper_wallet';
 import { PolymarketWallet } from './polymarket_wallet';
 import { WalletState, WalletConfig, TradeRecord, FeeConfig, LiveTradingConfig, OrderFill } from '../types';
@@ -15,6 +16,7 @@ export interface ExecutionWallet {
     price: number;
     size: number;
     tokenId?: string;
+    conditionId?: string;
   }): Promise<unknown>;
   updateBalance(delta: number): void;
   /** Optional display name for the dashboard (defaults to walletId) */
@@ -28,6 +30,8 @@ export interface ExecutionWallet {
   releaseBalance?(amount: number): void;
   /** Apply a confirmed fill from the order tracker */
   applyFill?(fill: OrderFill): void;
+  /** Return a signed ethers Signer for on-chain operations (e.g. CTF redemptions). */
+  getSigner?(): Signer;
 }
 
 export class WalletManager {

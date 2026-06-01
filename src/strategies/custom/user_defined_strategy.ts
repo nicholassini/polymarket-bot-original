@@ -17,22 +17,24 @@ import { Signal, MarketData, OrderRequest } from '../../types';
 
    Configuration (via strategyConfig.user_defined in config.yaml):
    {
-     minVolume: 1000,         // Minimum 24h volume
-     minLiquidity: 200,       // Minimum market liquidity
-     priceFloor: 0.08,        // Don't trade below this YES price
-     priceCeiling: 0.92,      // Don't trade above this YES price
-     emaShort: 5,             // Short EMA period
-     emaLong: 15,             // Long EMA period
-     rsiPeriod: 14,           // RSI lookback
-     rsiOverbought: 70,       // RSI sell threshold
-     rsiOversold: 30,         // RSI buy threshold
-     maxPositions: 8,         // Max simultaneous positions
-     takeProfitBps: 120,      // Take profit in basis points
-     stopLossBps: 100,        // Stop loss in basis points
-     trailingActivation: 60,  // Activate trailing stop at this bps gain
-     trailingDistance: 35,    // Trail this many bps behind peak
-     maxHoldMinutes: 45,      // Max holding time
-     positionSizePct: 0.02,   // % of capital per position
+     minVolume: 1000,              // Minimum 24h volume
+     minLiquidity: 5000,           // Minimum market liquidity ($5k)
+     priceFloor: 0.08,             // Don't trade below this YES price
+     priceCeiling: 0.92,           // Don't trade above this YES price
+     emaShort: 5,                  // Short EMA period
+     emaLong: 15,                  // Long EMA period
+     rsiPeriod: 14,                // RSI lookback
+     rsiOverbought: 70,            // RSI sell threshold
+     rsiOversold: 30,              // RSI buy threshold
+     maxPositions: 8,              // Max simultaneous positions
+     takeProfitBps: 120,           // Take profit in basis points
+     stopLossBps: 100,             // Stop loss in basis points
+     trailingActivation: 60,       // Activate trailing stop at this bps gain
+     trailingDistance: 35,         // Trail this many bps behind peak
+     maxHoldMinutes: 45,           // Max holding time
+     positionSizePct: 0.02,        // % of capital per position
+     maxSpreadCents: 0.05,         // Skip markets with spread > 5 cents
+     maxDaysToResolution: 7,       // Only trade markets resolving within N days
    }
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
@@ -54,11 +56,13 @@ interface UserParams {
   trailingDistance: number;
   maxHoldMinutes: number;
   positionSizePct: number;
+  maxSpreadCents: number;
+  maxDaysToResolution: number;
 }
 
 const DEFAULTS: UserParams = {
   minVolume: 1_000,
-  minLiquidity: 200,
+  minLiquidity: 5_000,
   priceFloor: 0.08,
   priceCeiling: 0.92,
   emaShort: 5,
@@ -73,6 +77,8 @@ const DEFAULTS: UserParams = {
   trailingDistance: 35,
   maxHoldMinutes: 45,
   positionSizePct: 0.02,
+  maxSpreadCents: 0.05,
+  maxDaysToResolution: 7,
 };
 
 interface UserPosition {
@@ -131,13 +137,39 @@ export class UserDefinedStrategy extends BaseStrategy {
     const signals: Signal[] = [];
     if (this.positions.length >= params.maxPositions) return signals;
 
+    let _totalMarkets = 0;
+    let _skipLiq = 0;
+    let _skipSpread = 0;
+    let _skipRes = 0;
+
     for (const [marketId, market] of this.markets) {
+      _totalMarkets++;
       // ── Filters ────────────────────────────────────────────
       if (market.volume24h < params.minVolume) continue;
-      if (market.liquidity < params.minLiquidity) continue;
+      if (market.liquidity < params.minLiquidity) {
+        _skipLiq++;
+        continue;
+      }
 
       const yesPrice = market.outcomePrices[0] ?? 0.5;
       if (yesPrice < params.priceFloor || yesPrice > params.priceCeiling) continue;
+
+      // ── Spread filter: skip wide-spread markets (execution cost too high) ──
+      const spread = market.spread ?? Math.abs(market.ask - market.bid);
+      if (spread > params.maxSpreadCents) {
+        _skipSpread++;
+        continue;
+      }
+
+      // ── Time filter: skip long-dated markets that trap capital ──
+      if (market.endDate) {
+        const hoursToResolution = (new Date(market.endDate).getTime() - Date.now()) / (1000 * 60 * 60);
+        const maxHours = params.maxDaysToResolution * 24;
+        if (hoursToResolution > maxHours) {
+          _skipRes++;
+          continue;
+        }
+      }
 
       const prices = this.priceHistory.get(marketId) ?? [];
       if (prices.length < params.emaLong + 2) continue;
@@ -205,6 +237,12 @@ export class UserDefinedStrategy extends BaseStrategy {
       }
     }
 
+    const _totalSkipped = _skipLiq + _skipSpread + _skipRes;
+    if (_totalSkipped > 0) {
+      const passed = _totalMarkets - _totalSkipped;
+      console.log(`[user_defined] ${_totalMarkets} markets → ${passed} passed filters (skipped: ${_skipRes} resolution, ${_skipLiq} liquidity, ${_skipSpread} spread)`);
+    }
+
     signals.sort((a, b) => b.confidence * b.edge - a.confidence * a.edge);
     return signals.slice(0, params.maxPositions - this.positions.length);
   }
@@ -221,13 +259,16 @@ export class UserDefinedStrategy extends BaseStrategy {
         const last = (this as any).tradeCooldowns?.get(key) ?? 0;
         return now - last > this.cooldownMs;
       })
-      .map((signal) => {
+      .flatMap((signal) => {
         const market = this.markets.get(signal.marketId);
         const liquidity = market?.liquidity ?? 500;
 
+        // Skip if market liquidity is too thin for any meaningful trade
+        if (liquidity < this.params.minLiquidity) return [];
+
         const baseSize = capital * this.params.positionSizePct * signal.confidence;
         const maxFromLiquidity = liquidity * 0.003;
-        const size = Math.max(1, Math.floor(Math.min(baseSize, maxFromLiquidity, 40)));
+        const size = Math.max(5, Math.floor(Math.min(baseSize, maxFromLiquidity, 40)));
 
         const price = signal.side === 'BUY'
           ? Number(Math.min(0.5 + signal.edge, market?.bid ?? 0.5).toFixed(4))

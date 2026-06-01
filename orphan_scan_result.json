@@ -1,0 +1,129 @@
+[
+  {
+    "tokenId": "100223828145771557365481497973228524653584015683453730224651209016438239024987",
+    "sharesRaw": "5000000",
+    "shares": "5.0",
+    "from": [
+      "0xe2222d279d744050d28e00520010520000310f59"
+    ],
+    "txs": [
+      "0x248e09e31e00805fb1dfb4c0562c0948955c0ed05eedae5f6e8ed35dfceee343"
+    ],
+    "blocks": [
+      86318466
+    ],
+    "market": {
+      "question": "Will CA River Plate win on 2026-03-08?",
+      "slug": "arg-riv-cat-2026-03-08-riv",
+      "conditionId": "0x441a76dd2bb884e6a35b0e29755b49c9296dca3855e1403e341ae5fcc698de5c",
+      "closed": false,
+      "archived": false,
+      "negRisk": true,
+      "outcomes": [
+        "Yes",
+        "No"
+      ],
+      "outcomePrices": [
+        "0.615",
+        "0.385"
+      ],
+      "clobTokenIds": [
+        "85346365251112466997013078139439871968799037888586018713457551790117704568908",
+        "100223828145771557365481497973228524653584015683453730224651209016438239024987"
+      ]
+    },
+    "classification": {
+      "bucket": "NEGRISK_SELL",
+      "outcome": "No",
+      "price": 0.385,
+      "valueEst": 1.925,
+      "action": "sell on CLOB (v2 SDK, leaked key, before rotation)"
+    }
+  },
+  {
+    "tokenId": "90077485296554652105228093861883509092558348830398544022527316478595524115839",
+    "sharesRaw": "10000000",
+    "shares": "10.0",
+    "from": [
+      "0xe60a678aa9df38fc2a2ac346ef9339c8a64fa633",
+      "0xe111180000d2663c0091e4f400237545b87b996b"
+    ],
+    "txs": [
+      "0x0d1f9243425f1b8d3b4009059d91e6acd4f656be0ee02a303918a80c9e07c800",
+      "0x48b3d6a3626b40b99bb0b437e197aaae25e562c5060fb12532fa2cbbff2cfa7a"
+    ],
+    "blocks": [
+      86318468,
+      86318471
+    ],
+    "market": {
+      "question": "Spread: Pittsburgh Pirates (-1.5)",
+      "slug": "mlb-cin-pit-2026-05-02-spread-home-1pt5",
+      "conditionId": "0xcc3bc8adb36e52874745de54130f08d54a1eee5807e3b96de301e14a3005651a",
+      "closed": true,
+      "archived": false,
+      "negRisk": false,
+      "outcomes": [
+        "Pittsburgh Pirates",
+        "Cincinnati Reds"
+      ],
+      "outcomePrices": [
+        "1",
+        "0"
+      ],
+      "clobTokenIds": [
+        "88585990584959258598016136688944358030639015774239737919196122717659864533183",
+        "90077485296554652105228093861883509092558348830398544022527316478595524115839"
+      ]
+    },
+    "classification": {
+      "bucket": "WORTHLESS",
+      "outcome": "Cincinnati Reds",
+      "price": 0,
+      "action": "leave on-chain (resolved loser)"
+    }
+  },
+  {
+    "tokenId": "94005134728161937801921699591116707771562429389839048466274850158711541301819",
+    "sharesRaw": "10000000",
+    "shares": "10.0",
+    "from": [
+      "0xe111180000d2663c0091e4f400237545b87b996b"
+    ],
+    "txs": [
+      "0x64be03510177dca86390c6c63449147104716366fc1795c6ec57b0a910733d81",
+      "0x56896729c4be25f991d84abfae2250be9f30c53b953a421f8c146f976d091d49"
+    ],
+    "blocks": [
+      86318491,
+      86318494
+    ],
+    "market": {
+      "question": "Bitcoin Up or Down on May 3?",
+      "slug": "bitcoin-up-or-down-on-may-3-2026",
+      "conditionId": "0x5ece7e650b7d1e3d82d4b08e1508c96f08a41c1028028326520e2d0a9286ea60",
+      "closed": false,
+      "archived": false,
+      "negRisk": false,
+      "outcomes": [
+        "Up",
+        "Down"
+      ],
+      "outcomePrices": [
+        "0.9655",
+        "0.0345"
+      ],
+      "clobTokenIds": [
+        "15864001993230660284438890461635592157126572162819548367267837162446835307383",
+        "94005134728161937801921699591116707771562429389839048466274850158711541301819"
+      ]
+    },
+    "classification": {
+      "bucket": "DUST",
+      "outcome": "Down",
+      "price": 0.0345,
+      "valueEst": 0.34500000000000003,
+      "action": "skip (not worth gas)"
+    }
+  }
+]

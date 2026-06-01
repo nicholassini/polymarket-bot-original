@@ -1,9 +1,11 @@
+import { ethers } from 'ethers';
 import { WalletConfig, WalletState, Position, TradeRecord, RiskLimits, OrderFill, FeeConfig, LiveTradingConfig } from '../types';
 import { logger } from '../reporting/logs';
 import { consoleLog } from '../reporting/console_log';
 import type { Database } from '../storage/database';
 import { getClobClient } from '../utils/clob_client';
 import { loadClobSdk } from '../utils/clob_sdk';
+import { getTradesDB } from '../storage/trades_db';
 
 export interface OrderPlacementResult {
   status: 'submitted' | 'filled' | 'rejected' | 'error';
@@ -73,6 +75,36 @@ export class PolymarketWallet {
     // store walletAddress for reconciliation if provided
     if (config.walletAddress) {
       (this.state as unknown as Record<string, unknown>)['walletAddress'] = config.walletAddress;
+    }
+
+    this.restorePositions();
+  }
+
+  private restorePositions(): void {
+    try {
+      const db = getTradesDB();
+      const rows = db.loadOpenPositions(this.state.walletId);
+      if (rows.length === 0) return;
+
+      let deployedCapital = 0;
+      this.state.openPositions = rows.map((row) => {
+        deployedCapital += row.totalCost;
+        return {
+          marketId: row.marketId,
+          outcome: row.outcome as 'YES' | 'NO',
+          size: row.size,
+          avgPrice: row.avgPrice,
+          realizedPnl: row.realizedPnl,
+        };
+      });
+
+      this.state.availableBalance = Math.max(0, this.state.availableBalance - deployedCapital);
+      logger.info(
+        { walletId: this.state.walletId, positions: rows.length, deployedCapital },
+        `Restored ${rows.length} open position(s) from DB; deployed capital $${deployedCapital.toFixed(2)}`,
+      );
+    } catch (err) {
+      logger.warn({ err: String(err), walletId: this.state.walletId }, 'restorePositions: failed to load from DB');
     }
   }
 
@@ -145,6 +177,7 @@ export class PolymarketWallet {
     price: number;
     size: number;
     tokenId?: string;
+    conditionId?: string;
   }): Promise<OrderPlacementResult> {
     const cost = request.price * request.size;
 
@@ -153,6 +186,16 @@ export class PolymarketWallet {
     // 1. tokenId required for V2
     if (!request.tokenId) {
       return { status: 'rejected', orderId: null, filledSize: 0, reason: 'tokenId required for V2 order submission' };
+    }
+
+    // 1b. V2 minimum order size: at least 5 shares AND at least $1
+    const MIN_SHARES = 5;
+    const MIN_COST = 1.0;
+    if (request.size < MIN_SHARES) {
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: `V2 minimum size is ${MIN_SHARES} shares, got ${request.size}` };
+    }
+    if (cost < MIN_COST) {
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: `V2 minimum order cost is $${MIN_COST}, got $${cost.toFixed(2)}` };
     }
 
     // 2. Daily order limit
@@ -166,11 +209,17 @@ export class PolymarketWallet {
     }
 
     // 4. Pending orders limit
-    if (this.orderTracker) {
-      const pending = this.orderTracker.getPendingForWallet(this.state.walletId);
-      if (pending.length >= this.liveCfg.maxPendingOrders) {
-        return { status: 'rejected', orderId: null, filledSize: 0, reason: `maxPendingOrders (${this.liveCfg.maxPendingOrders}) reached` };
-      }
+    const pendingCount = this.orderTracker
+      ? this.orderTracker.getPendingForWallet(this.state.walletId).length
+      : 0;
+    if (pendingCount >= this.liveCfg.maxPendingOrders) {
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: `maxPendingOrders (${this.liveCfg.maxPendingOrders}) reached` };
+    }
+
+    // 4b. Open trades limit (positions + pending combined)
+    const maxOpen = this.state.riskLimits.maxOpenTrades ?? 10;
+    if (this.state.openPositions.length + pendingCount >= maxOpen) {
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: `maxOpenTrades (${maxOpen}) reached — ${this.state.openPositions.length} open + ${pendingCount} pending` };
     }
 
     // 5. Insufficient balance
@@ -211,7 +260,7 @@ export class PolymarketWallet {
         { tickSize: '0.01' },
         OrderType.GTC,
       ) as { orderID?: string; success?: boolean; errorMsg?: string };
-      logger.info({ walletId: this.state.walletId, sdkResponse: JSON.stringify(sdkResponse) }, 'LIVE order SDK raw response');
+      logger.debug({ walletId: this.state.walletId, sdkResponse: JSON.stringify(sdkResponse) }, 'LIVE order SDK raw response');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ walletId: this.state.walletId, error: msg }, 'LIVE order SDK error');
@@ -223,6 +272,18 @@ export class PolymarketWallet {
       logger.warn({ walletId: this.state.walletId, errorMsg: sdkResponse.errorMsg }, 'LIVE order rejected by CLOB');
       this.releaseReservation(cost);
       return { status: 'rejected', orderId: null, filledSize: 0, reason: sdkResponse.errorMsg ?? 'order rejected' };
+    }
+ 
+    // Catch error responses that don't set success=false (e.g. { error: "...", status: 400 })
+    if (sdkResponse && (sdkResponse as Record<string, unknown>).error) {
+      const errorMsg = String((sdkResponse as Record<string, unknown>).error);
+      const httpStatus = (sdkResponse as Record<string, unknown>).status;
+      logger.warn(
+        { walletId: this.state.walletId, errorMsg, httpStatus },
+        'LIVE order rejected by CLOB (error field)',
+      );
+      this.releaseReservation(cost);
+      return { status: 'rejected', orderId: null, filledSize: 0, reason: errorMsg };
     }
 
     /* ── Order accepted ── */
@@ -275,7 +336,46 @@ export class PolymarketWallet {
     this.state.availableBalance -= (cost + fee);
     this.totalFeesAccrued += fee;
 
-    this._applyPositionChange(fill.marketId, fill.outcome, fill.side, fill.price, fill.size);
+    this._applyPositionChange(fill.marketId, fill.outcome, fill.side, fill.price, fill.size, fill.tokenId, fill.conditionId);
+
+    // Persist fill + current position state (non-blocking)
+    try {
+      const db = getTradesDB();
+      db.recordTrade({
+        orderId:   fill.orderId,
+        walletId:  this.state.walletId,
+        marketId:  fill.marketId,
+        side:      fill.side,
+        outcome:   fill.outcome,
+        price:     fill.price,
+        size:      fill.size,
+        cost,
+        fee,
+        txHash:    fill.txHash,
+        timestamp: new Date(fill.timestamp).toISOString(),
+        status:    'filled',
+      });
+      const pos = this.state.openPositions.find(
+        (p) => p.marketId === fill.marketId && p.outcome === fill.outcome,
+      );
+      if (pos) {
+        db.upsertPosition({
+          walletId:    this.state.walletId,
+          marketId:    fill.marketId,
+          tokenId:     fill.tokenId ?? pos.tokenId,
+          conditionId: fill.conditionId ?? pos.conditionId,
+          outcome:     fill.outcome,
+          side:        fill.side,
+          size:        pos.size,
+          avgPrice:    pos.avgPrice,
+          totalCost:   pos.avgPrice * pos.size,
+          realizedPnl: pos.realizedPnl,
+          openedAt:    new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      logger.warn({ err: String(err), orderId: fill.orderId }, 'trades_db: persist fill failed');
+    }
 
     logger.info(
       { walletId: this.state.walletId, orderId: fill.orderId, cost, fee },
@@ -295,8 +395,8 @@ export class PolymarketWallet {
 
     // pUSD (V2 collateral) — 18 decimals
     const COLLATERAL_ADDRESS = process.env.POLYMARKET_COLLATERAL_ADDRESS ?? '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
-    const COLLATERAL_DECIMALS = parseInt(process.env.POLYMARKET_COLLATERAL_DECIMALS ?? '18', 10);
-    const RPC = process.env.POLYGON_RPC ?? 'https://polygon-rpc.com';
+    const COLLATERAL_DECIMALS = parseInt(process.env.POLYMARKET_COLLATERAL_DECIMALS ?? '6', 10);
+    const RPC = process.env.POLYGON_RPC_URL ?? process.env.POLYGON_RPC ?? 'https://polygon-bor-rpc.publicnode.com';
 
     // ERC-20 balanceOf(address) call
     const data = `0x70a08231000000000000000000000000${walletAddress.slice(2).toLowerCase()}`;
@@ -345,12 +445,31 @@ export class PolymarketWallet {
     }
   }
 
+  /**
+   * Returns an ethers Signer for the wallet's private key, connected to the configured RPC.
+   * Used by PositionReconciler to sign on-chain redemption transactions without the reconciler
+   * holding its own private key.
+   *
+   * INTERFACE CHANGE: This method was added to satisfy the expanded WalletRef interface required
+   * by the live-mode redemption flow. It reads POLYMARKET_PRIVATE_KEY from env (same key used
+   * by the CLOB client for trading) and connects to POLYGON_RPC_URL.
+   */
+  getSigner(): ethers.Signer {
+    const pk = process.env.POLYMARKET_PRIVATE_KEY;
+    if (!pk) throw new Error('POLYMARKET_PRIVATE_KEY not set — cannot create signer for redemption');
+    const rpcUrl =
+      process.env.POLYGON_RPC_URL ?? process.env.POLYGON_RPC ?? 'https://polygon-bor-rpc.publicnode.com';
+    return new ethers.Wallet(pk, new ethers.providers.JsonRpcProvider(rpcUrl));
+  }
+
   private _applyPositionChange(
     marketId: string,
     outcome: 'YES' | 'NO',
     side: 'BUY' | 'SELL',
     price: number,
     size: number,
+    tokenId?: string,
+    conditionId?: string,
   ): void {
     const existing = this.state.openPositions.find(
       (p) => p.marketId === marketId && p.outcome === outcome,
@@ -359,21 +478,33 @@ export class PolymarketWallet {
     if (!existing) {
       if (side === 'BUY') {
         this.state.openPositions.push({
-          marketId, outcome, size, avgPrice: price, realizedPnl: 0,
+          marketId, outcome, size, avgPrice: price, realizedPnl: 0, tokenId, conditionId,
         });
       }
       return;
     }
+
+    // If an existing position is missing tokenId or conditionId (e.g. it was loaded
+    // from DB before backfill), and a fresh fill provides them, populate the gap.
+    if (tokenId && !existing.tokenId) existing.tokenId = tokenId;
+    if (conditionId && !existing.conditionId) existing.conditionId = conditionId;
 
     if (side === 'BUY') {
       const newSize = existing.size + size;
       existing.avgPrice = (existing.avgPrice * existing.size + price * size) / newSize;
       existing.size = newSize;
     } else {
-      existing.size -= Math.min(size, existing.size);
+      const closedSize = Math.min(size, existing.size);
+      const realizedPnl = (price - existing.avgPrice) * closedSize;
+      existing.size -= closedSize;
       if (existing.size <= 0) {
         existing.size = 0;
         existing.avgPrice = 0;
+        try {
+          getTradesDB().closePosition(this.state.walletId, marketId, outcome, realizedPnl);
+        } catch (err) {
+          logger.warn({ err: String(err), walletId: this.state.walletId, marketId }, 'trades_db: closePosition failed');
+        }
       }
     }
 

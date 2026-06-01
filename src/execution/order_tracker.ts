@@ -120,14 +120,32 @@ export class OrderTracker {
       // Poll status via V2 SDK
       try {
         const data = await this.clobClient.getOrder(order.orderId);
-        const clobStatus = (data.status ?? '').toUpperCase();
+ 
+        // Guard: CLOB may return an error object instead of an order
+        // e.g. { error: "Invalid orderID", status: 400 }
+        if (data && typeof (data as unknown as Record<string, unknown>).error === 'string') {
+          const errMsg = (data as unknown as Record<string, unknown>).error as string;
+          logger.warn(
+            { orderId: order.orderId, clobError: errMsg },
+            `OrderTracker: CLOB returned error for order ${order.orderId} — removing from tracking`,
+          );
+          const errWallet = this.walletManager.getWallet(order.walletId);
+          errWallet?.releaseBalance?.(order.submission.price * order.submission.size);
+          this.removePending(order.orderId);
+          continue;
+        }
+ 
+        // Safe status extraction — data.status could be a string, number, or undefined
+        const rawStatus = (data as unknown as Record<string, unknown>).status;
+        const clobStatus = (typeof rawStatus === 'string' ? rawStatus : '').toUpperCase();
         const filledSizeStr = data.size_matched ?? '0';
         const priceStr = data.price ?? String(order.submission.price);
 
         if (clobStatus === 'MATCHED') {
           const filledSize = Number(filledSizeStr) || order.submission.size;
           const fillPrice = Number(priceStr) || order.submission.price;
-          this.applyConfirmedFill(order, filledSize, fillPrice, 'filled');
+          const txHash = await this.fetchTxHashFromOrder(data, order.orderId);
+          this.applyConfirmedFill(order, filledSize, fillPrice, 'filled', txHash);
         } else if (clobStatus === 'CANCELLED') {
           logger.warn({ orderId: order.orderId }, `OrderTracker: order ${order.orderId} was cancelled by exchange`);
           notify(`Order cancelled by exchange: ${order.orderId} (wallet=${order.walletId})`, 'warn');
@@ -138,7 +156,8 @@ export class OrderTracker {
           const filledSize = Number(filledSizeStr) || 0;
           if (filledSize > 0) {
             const fillPrice = Number(priceStr) || order.submission.price;
-            this.applyConfirmedFill(order, filledSize, fillPrice, 'partially_filled');
+            const txHash = await this.fetchTxHashFromOrder(data, order.orderId);
+            this.applyConfirmedFill(order, filledSize, fillPrice, 'partially_filled', txHash);
             // Update the remaining size in the pending order
             order.submission = { ...order.submission, size: order.submission.size - filledSize };
             order.lastCheckedAt = new Date().toISOString();
@@ -158,11 +177,25 @@ export class OrderTracker {
           this.db.savePendingOrder(order);
         }
       } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+ 
+        // If the CLOB says the order ID is invalid, stop tracking immediately
+        if (errMsg.includes('Invalid orderID') || errMsg.includes('invalid order') || errMsg.includes('not found')) {
+          logger.warn(
+            { orderId: order.orderId },
+            `OrderTracker: order ${order.orderId} is invalid on CLOB — removing from tracking`,
+          );
+          const errWallet = this.walletManager.getWallet(order.walletId);
+          errWallet?.releaseBalance?.(order.submission.price * order.submission.size);
+          this.removePending(order.orderId);
+          continue;
+        }
+ 
         order.checkCount++;
         order.lastCheckedAt = new Date().toISOString();
         this.pending.set(order.orderId, order);
         this.db.savePendingOrder(order);
-        logger.warn({ orderId: order.orderId, err: err instanceof Error ? err.message : String(err) }, 'OrderTracker: error checking order status');
+        logger.warn({ orderId: order.orderId, err: errMsg }, 'OrderTracker: error checking order status');
       }
     }
   }
@@ -172,6 +205,7 @@ export class OrderTracker {
     filledSize: number,
     fillPrice: number,
     fillType: 'filled' | 'partially_filled',
+    txHash?: string,
   ): void {
     const wallet = this.walletManager.getWallet(order.walletId);
     if (!wallet || !wallet.applyFill) {
@@ -183,11 +217,14 @@ export class OrderTracker {
     const fill: OrderFill = {
       orderId: order.orderId,
       marketId: order.submission.marketId,
+      tokenId: order.submission.tokenId,
+      conditionId: order.submission.conditionId,
       outcome: order.submission.outcome,
       side: order.submission.side,
       price: fillPrice,
       size: filledSize,
       timestamp: Date.now(),
+      txHash,
     };
 
     wallet.applyFill(fill);
@@ -199,6 +236,39 @@ export class OrderTracker {
 
     if (fillType === 'filled') {
       this.removePending(order.orderId);
+    }
+  }
+  /**
+   * Resolve the on-chain settlement transaction hash for a confirmed fill.
+   * The OpenOrder response from getOrder() carries `associate_trades: string[]`
+   * (trade IDs). We resolve the most recent one via getTrades({ id }), which
+   * returns a Trade record carrying `transaction_hash`. Returns undefined on any
+   * failure — applyConfirmedFill is non-fatal in that case, the trade row is
+   * still recorded with txHash=null and the reconciler's NULL-filter handles it.
+   */
+  private async fetchTxHashFromOrder(orderData: unknown, orderId: string): Promise<string | undefined> {
+    try {
+      const tradeIds = (orderData as { associate_trades?: string[] })?.associate_trades ?? [];
+      if (tradeIds.length === 0) {
+        logger.debug({ orderId }, 'OrderTracker: no associate_trades on confirmed order — txHash unavailable');
+        return undefined;
+      }
+      // Use the most recently appended trade ID — for partial fills, this is the new settlement
+      const latestTradeId = tradeIds[tradeIds.length - 1];
+      const trades = await this.clobClient.getTrades({ id: latestTradeId });
+      if (!trades || trades.length === 0) {
+        logger.warn({ orderId, latestTradeId }, 'OrderTracker: getTrades returned no rows for trade id');
+        return undefined;
+      }
+      const txHash = trades[0].transaction_hash;
+      if (!txHash) {
+        logger.warn({ orderId, latestTradeId }, 'OrderTracker: trade record has no transaction_hash');
+        return undefined;
+      }
+      return txHash;
+    } catch (err) {
+      logger.warn({ orderId, err: err instanceof Error ? err.message : String(err) }, 'OrderTracker: fetchTxHashFromOrder failed');
+      return undefined;
     }
   }
 

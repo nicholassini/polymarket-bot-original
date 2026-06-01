@@ -920,8 +920,31 @@ export class DashboardServer {
       restored++;
     }
 
-    if (restored > 0) {
+   if (restored > 0) {
       console.log(`[DashboardServer] Restored ${restored} wallet(s) from database`);
+    }
+
+    // Assign config-based wallets (from config.yaml) to the admin user
+    // so they appear in the dashboard. These wallets exist in WalletManager
+    // but were never registered in userDb.
+    const allWallets = this.walletManager.listWallets();
+    const allUsers = this.userDb.getAllUsers();
+    const adminUser = allUsers.find(u => u.isAdmin) ?? allUsers[0];
+    if (adminUser) {
+      let assigned = 0;
+      for (const w of allWallets) {
+        // Check if this wallet is already assigned to any user
+        const existingAssignment = allUsers.some(u =>
+          this.userDb.getWalletIds(u.id).includes(w.walletId)
+        );
+        if (!existingAssignment) {
+          this.userDb.assignWallet(w.walletId, adminUser.id);
+          assigned++;
+        }
+      }
+      if (assigned > 0) {
+        console.log(`[DashboardServer] Assigned ${assigned} config-based wallet(s) to admin user ${adminUser.email}`);
+      }
     }
 
     // Clean up orphaned user_wallets entries that have no wallet_configs
@@ -1694,6 +1717,18 @@ export class DashboardServer {
 
     /* ─── JSON: wallet list ─── */
     if (path === '/api/wallets' && method === 'GET') {
+      // Auto-assign config-based wallets that aren't owned by any user
+      if (user.isAdmin) {
+        const allManagedWallets = this.walletManager.listWallets();
+        const allUsers = this.userDb.getAllUsers();
+        for (const w of allManagedWallets) {
+          const owned = allUsers.some(u => this.userDb.getWalletIds(u.id).includes(w.walletId));
+          if (!owned) {
+            this.userDb.assignWallet(w.walletId, userId);
+            userWalletIds.add(w.walletId);
+          }
+        }
+      }
       json(res, 200, getUserWallets());
       return;
     }

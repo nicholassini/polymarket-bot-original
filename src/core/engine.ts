@@ -7,6 +7,8 @@ import { STRATEGY_REGISTRY } from '../strategies/registry';
 import { AppConfig, MarketData } from '../types';
 import { logger } from '../reporting/logs';
 import { consoleLog } from '../reporting/console_log';
+import { getTradesDB } from '../storage/trades_db';
+import { PositionReconciler } from '../reconciliation/position_reconciler';
 
 interface StrategyRunner {
   strategy: StrategyInterface;
@@ -31,6 +33,8 @@ export class Engine {
   }
 
   async initialize(): Promise<void> {
+    getTradesDB(); // ensure DB is open before wallets start trading
+
     for (const wallet of this.config.wallets) {
       const StrategyCtor = STRATEGY_REGISTRY[wallet.strategy];
       if (!StrategyCtor) {
@@ -60,6 +64,28 @@ export class Engine {
         capital: walletState.capitalAllocated,
         mode: walletState.mode,
       });
+    }
+
+    // Set up position reconcilers for all LIVE wallets (skip paper wallets)
+    this.reconcilers = [];
+    const reconcileDryRun = process.env.RECONCILER_DRY_RUN !== 'false';
+    const rpcUrl = process.env.POLYGON_RPC_URL ?? process.env.POLYGON_RPC ?? 'https://polygon-bor-rpc.publicnode.com';
+    for (const walletCfg of this.config.wallets) {
+      const wallet = this.walletManager.getWallet(walletCfg.id);
+      if (!wallet || wallet.getState().mode !== 'LIVE') continue;
+      this.reconcilers.push(new PositionReconciler({
+        walletId: walletCfg.id,
+        wallet,
+        clobApi: this.config.polymarket.clobApi,
+        rpcUrl,
+        dryRun: reconcileDryRun,
+      }));
+    }
+    if (this.reconcilers.length > 0) {
+      logger.info(
+        { reconcilers: this.reconcilers.length, dryRun: reconcileDryRun, intervalTicks: this.RECONCILE_EVERY_TICKS },
+        'PositionReconciler initialized',
+      );
     }
 
     // Remove any previously registered handler to prevent listener stacking
@@ -225,6 +251,8 @@ export class Engine {
   private tickCount = 0;
   private marketUpdateCount = 0;
   private lastScanLog = 0;
+  private reconcilers: PositionReconciler[] = [];
+  private readonly RECONCILE_EVERY_TICKS = parseInt(process.env.RECONCILE_INTERVAL_TICKS ?? '60', 10);
 
   private async tick(): Promise<void> {
     this.tickCount++;
@@ -247,6 +275,36 @@ export class Engine {
     const tickMs = Date.now() - tickStart;
     if (tickMs > 2000 || this.tickCount % 12 === 0) {
       consoleLog.info('ENGINE', `Tick #${this.tickCount} completed in ${tickMs}ms (${this.runners.length} runners)`);
+    }
+
+    // Snapshot balances every 12 ticks (~60 s)
+    if (this.tickCount % 12 === 0) {
+      try {
+        const db = getTradesDB();
+        for (const runner of this.runners) {
+          const wallet = this.walletManager.getWallet(runner.walletId);
+          if (!wallet) continue;
+          const state = wallet.getState();
+          const deployedCapital = db.getDeployedCapital(runner.walletId);
+          db.snapshotBalance(runner.walletId, state.availableBalance, deployedCapital, state.openPositions.length, state.realizedPnl);
+        }
+      } catch (err) {
+        logger.warn({ err: String(err) }, 'trades_db: balance snapshot failed');
+      }
+    }
+
+    // Reconcile resolved positions at configurable interval (default every 60 ticks ≈ 5 min)
+    // Skip tick 0 — wallet may still be initializing. First run fires at tick RECONCILE_EVERY_TICKS.
+    if (this.tickCount % this.RECONCILE_EVERY_TICKS === 0 && this.tickCount > 0) {
+      for (const reconciler of this.reconcilers) {
+        try {
+          const summary = await reconciler.run(this.tickCount);
+          logger.info({ summary }, 'Reconciler cycle complete');
+        } catch (err) {
+          logger.error({ err }, 'Reconciler cycle failed');
+          // Tick continues — reconciler failure is non-fatal
+        }
+      }
     }
   }
 
@@ -294,15 +352,16 @@ export class Engine {
     }
 
     const orders = await runner.strategy.sizePositions(signals);
-     // Resolve V2 tokenId from market data for each order
+     // Resolve V2 tokenId and conditionId from market data for each order
     for (const order of orders) {
-      if (!order.tokenId) {
-        const market = this.stream.getMarket(order.marketId);
-        if (market?.clobTokenIds?.length) {
-          order.tokenId = order.outcome === 'YES'
-            ? market.clobTokenIds[0]
-            : market.clobTokenIds[1];
-        }
+      const market = this.stream.getMarket(order.marketId);
+      if (!order.tokenId && market?.clobTokenIds?.length) {
+        order.tokenId = order.outcome === 'YES'
+          ? market.clobTokenIds[0]
+          : market.clobTokenIds[1];
+      }
+      if (!order.conditionId && market?.conditionId) {
+        order.conditionId = market.conditionId;
       }
     }
     if (orders.length > 0) {
@@ -323,17 +382,33 @@ export class Engine {
       try {
         const executed = await this.orderRouter.route(order);
         if (executed) {
-          runner.strategy.notifyFill(order);
-          consoleLog.success('FILL', `[${runner.strategy.name}] Executed ${order.side} ${order.outcome} ×${order.size} @ $${order.price.toFixed(4)}`, {
-            walletId: order.walletId,
-            strategy: order.strategy,
-            marketId: order.marketId,
-            outcome: order.outcome,
-            side: order.side,
-            price: order.price,
-            size: order.size,
-            cost: Number((order.price * order.size).toFixed(4)),
-          });
+          const walletMode = this.walletManager.getWallet(order.walletId)?.getState()?.mode;
+          if (walletMode === 'LIVE') {
+            // LIVE orders are only submitted here — real fills come via OrderTracker.applyFill()
+            consoleLog.info('ORDER', `[${runner.strategy.name}] Submitted ${order.side} ${order.outcome} ×${order.size} @ $${order.price.toFixed(4)}`, {
+              walletId: order.walletId,
+              strategy: order.strategy,
+              marketId: order.marketId,
+              outcome: order.outcome,
+              side: order.side,
+              price: order.price,
+              size: order.size,
+              cost: Number((order.price * order.size).toFixed(4)),
+            });
+          } else {
+            // PAPER wallets fill instantly — notify strategy and log as fill
+            runner.strategy.notifyFill(order);
+            consoleLog.success('FILL', `[${runner.strategy.name}] Executed ${order.side} ${order.outcome} ×${order.size} @ $${order.price.toFixed(4)}`, {
+              walletId: order.walletId,
+              strategy: order.strategy,
+              marketId: order.marketId,
+              outcome: order.outcome,
+              side: order.side,
+              price: order.price,
+              size: order.size,
+              cost: Number((order.price * order.size).toFixed(4)),
+            });
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -349,13 +424,14 @@ export class Engine {
 
     /* ── Route exit orders produced by managePositions() ── */
     const exitOrders = runner.strategy.drainExitOrders();
-    // Resolve V2 tokenId for exit orders
+    // Resolve V2 tokenId and conditionId for exit orders
     for (const exitOrder of exitOrders) {
-      if (!exitOrder.tokenId) {
-        const market = this.stream.getMarket(exitOrder.marketId);
-        if (market?.clobTokenIds?.length) {
-          exitOrder.tokenId = exitOrder.outcome === 'YES' ? market.clobTokenIds[0] : market.clobTokenIds[1];
-        }
+      const market = this.stream.getMarket(exitOrder.marketId);
+      if (!exitOrder.tokenId && market?.clobTokenIds?.length) {
+        exitOrder.tokenId = exitOrder.outcome === 'YES' ? market.clobTokenIds[0] : market.clobTokenIds[1];
+      }
+      if (!exitOrder.conditionId && market?.conditionId) {
+        exitOrder.conditionId = market.conditionId;
       }
     }
     if (exitOrders.length > 0) {
@@ -376,15 +452,28 @@ export class Engine {
       try {
         const executed = await this.orderRouter.route(exitOrder);
         if (executed) {
-          consoleLog.success('FILL', `[${runner.strategy.name}] Exited ${exitOrder.outcome} ×${exitOrder.size} @ $${exitOrder.price.toFixed(4)}`, {
-            walletId: exitOrder.walletId,
-            strategy: exitOrder.strategy,
-            marketId: exitOrder.marketId,
-            outcome: exitOrder.outcome,
-            side: exitOrder.side,
-            price: exitOrder.price,
-            size: exitOrder.size,
-          });
+          const exitWalletMode = this.walletManager.getWallet(exitOrder.walletId)?.getState()?.mode;
+          if (exitWalletMode === 'LIVE') {
+            consoleLog.info('ORDER', `[${runner.strategy.name}] Exit submitted ${exitOrder.outcome} ×${exitOrder.size} @ $${exitOrder.price.toFixed(4)}`, {
+              walletId: exitOrder.walletId,
+              strategy: exitOrder.strategy,
+              marketId: exitOrder.marketId,
+              outcome: exitOrder.outcome,
+              side: exitOrder.side,
+              price: exitOrder.price,
+              size: exitOrder.size,
+            });
+          } else {
+            consoleLog.success('FILL', `[${runner.strategy.name}] Exited ${exitOrder.outcome} ×${exitOrder.size} @ $${exitOrder.price.toFixed(4)}`, {
+              walletId: exitOrder.walletId,
+              strategy: exitOrder.strategy,
+              marketId: exitOrder.marketId,
+              outcome: exitOrder.outcome,
+              side: exitOrder.side,
+              price: exitOrder.price,
+              size: exitOrder.size,
+            });
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

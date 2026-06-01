@@ -6,6 +6,8 @@ export interface OrderSubmission {
   size: number;
   /** V2: CLOB token ID encoding the market + outcome. Required for live orders. */
   tokenId?: string;
+  /** CTF condition ID — propagates from order request through tracker to fill. */
+  conditionId?: string;
 }
 
 export interface OrderResult {
