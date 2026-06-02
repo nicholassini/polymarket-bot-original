@@ -9,6 +9,9 @@ import {
   ResolutionStatus,
   CollateralDetectionResult,
   CTF_ADDRESS,
+  NEG_RISK_ADAPTER_ADDRESS,   // added
+  NEG_RISK_ADAPTER_ABI,       // added
+  USDCE_ADDRESS,              // added
 } from './collateral_detector';
 
 export type PositionClassification =
@@ -34,6 +37,9 @@ export interface ReconcilePositionResult {
    * (missing conditionId, missing tokenId, CLOB unavailable).
    */
   outcomeIndex?: number;
+  /** True when the CLOB market reports neg_risk. Routes run() to the
+   *  NegRiskAdapter redemption path instead of the CTF path. */
+  isNegRisk?: boolean;
   error?: string;
 }
 
@@ -167,13 +173,17 @@ export class PositionReconciler {
       if (!this.dryRun) {
         if (result.classification === 'RESOLVED_WINNER') {
           redemptionsAttempted++;
-          const redeemResult = await this.redeemWinner(pos, result);
+          const redeemResult = result.isNegRisk
+            ? await this.redeemWinnerNegRisk(pos, result)
+            : await this.redeemWinner(pos, result);
           if (redeemResult.succeeded) {
             redemptionsSucceeded++;
             capitalRecovered += redeemResult.payoutInDollars;
             totalPayoutProcessed += redeemResult.payoutInDollars;
           }
         } else if (result.classification === 'RESOLVED_LOSER') {
+          // Generic DB-only close — works for both standard and neg-risk losers.
+          // This is the other half of gap #1: neg-risk losers used to be skipped.
           this.closeLoser(pos, result);
         }
       }
@@ -239,10 +249,11 @@ export class PositionReconciler {
       };
     }
 
-    // Step 4: Skip neg-risk markets — their settlement uses NegRiskAdapter, not CTF.redeemPositions
-    if (market.neg_risk) {
-      return { ...base, classification: 'NEG_RISK_SKIP' };
-    }
+    // Step 4: Record the neg-risk flag — do NOT skip.
+    // Each neg-risk sub-question is itself a binary condition in the CTF, so the
+    // resolution check below (payoutDenominator / payoutNumerators) is identical.
+    // run() uses isNegRisk to pick the NegRiskAdapter redemption path.
+    const isNegRisk = market.neg_risk === true;
 
     // Step 5: Derive outcomeIndex by matching pos.tokenId against CLOB tokens[].token_id.
     // This is the authoritative source — never infer from outcome string (which fails for
@@ -336,6 +347,7 @@ export class PositionReconciler {
       payoutAmount,
       realizedPnl,
       outcomeIndex,
+      isNegRisk,   // added
     };
   }
 
@@ -563,6 +575,157 @@ export class PositionReconciler {
     result.payoutAmount = payoutInDollars;
     result.realizedPnl = realizedPnl;
 
+    return { succeeded: true, payoutInDollars };
+  }
+
+  /**
+   * Live-mode RESOLVED_WINNER path for NEG-RISK markets.
+   *
+   * Differs from redeemWinner (standard CTF) in three ways:
+   *   1. Redeems via NegRiskAdapter.redeemPositions(conditionId, amounts) — the
+   *      2-arg signature, NOT the CTF 4-arg
+   *      (collateral, parentCollectionId, conditionId, indexSets).
+   *   2. No collateral detection. Neg-risk redemption always unwraps the
+   *      adapter's WrappedCollateral and returns USDC.e, so we measure the
+   *      USDC.e balance delta. No tx_hash / PositionSplit replay is needed —
+   *      which matters, because neg-risk buys don't emit a CTF PositionSplit and
+   *      our neg-risk rows have tx_hash = NULL.
+   *   3. amounts is outcome-indexed (raw 6-dp units): the held outcome's slot
+   *      gets size*1e6, the other slot gets 0. Each neg-risk sub-question is
+   *      binary at the CTF level, so the array length is 2.
+   */
+  private async redeemWinnerNegRisk(
+    pos: PersistedPosition,
+    result: ReconcilePositionResult,
+  ): Promise<{ succeeded: boolean; payoutInDollars: number }> {
+    const db = getTradesDB();
+
+    // outcomeIndex must have been set during classification (Step 5).
+    if (result.outcomeIndex === undefined) {
+      logger.error(
+        { positionId: result.positionId, conditionId: result.conditionId },
+        'Reconciler(negRisk): outcomeIndex missing on RESOLVED_WINNER — refusing to redeem',
+      );
+      result.error = 'outcomeIndex missing on neg-risk RESOLVED_WINNER';
+      return { succeeded: false, payoutInDollars: 0 };
+    }
+
+    if (!this.wallet.getSigner) {
+      logger.error(
+        { positionId: result.positionId },
+        'Reconciler(negRisk): wallet does not implement getSigner() — cannot submit redemption',
+      );
+      result.error = 'wallet does not implement getSigner()';
+      return { succeeded: false, payoutInDollars: 0 };
+    }
+
+    const signer = this.wallet.getSigner();
+    const walletAddress = await signer.getAddress();
+
+    // Neg-risk redemption settles in USDC.e — measure the delta on that token.
+    const collateral = new ethers.Contract(USDCE_ADDRESS, ERC20_ABI, signer);
+
+    // Binary sub-question: 2 outcome slots. Held outcome gets size*1e6, other 0.
+    // outcomeIndex is the position's index in CLOB tokens[]; we assume that order
+    // matches the CTF outcome-slot order (same assumption the standard indexSet
+    // path makes with `1 << outcomeIndex`). Validate in dry-run before trusting.
+    const amounts = [ethers.constants.Zero, ethers.constants.Zero];
+    amounts[result.outcomeIndex] = ethers.utils.parseUnits(String(pos.size), 6);
+
+    let preBalance: ethers.BigNumber;
+    try {
+      preBalance = await collateral.balanceOf(walletAddress);
+    } catch (err) {
+      logger.error(
+        { positionId: result.positionId, err: String(err) },
+        'Reconciler(negRisk): pre-redemption USDC.e balance read failed',
+      );
+      result.error = `neg-risk pre-balance read failed: ${String(err)}`;
+      return { succeeded: false, payoutInDollars: 0 };
+    }
+
+    const adapter = new ethers.Contract(
+      NEG_RISK_ADAPTER_ADDRESS,
+      NEG_RISK_ADAPTER_ABI,
+      signer,
+    );
+
+    let receipt: ethers.providers.TransactionReceipt;
+    try {
+      const tx = await adapter.redeemPositions(pos.conditionId, amounts, {
+        maxPriorityFeePerGas: MAX_PRIORITY_FEE,
+        maxFeePerGas: MAX_FEE,
+      });
+      logger.info(
+        {
+          positionId: result.positionId,
+          conditionId: pos.conditionId,
+          txHash: tx.hash,
+          amounts: amounts.map((a) => a.toString()),
+        },
+        'Reconciler(negRisk): redeemPositions submitted',
+      );
+      receipt = await tx.wait(1);
+    } catch (err) {
+      logger.error(
+        { positionId: result.positionId, conditionId: pos.conditionId, err: String(err) },
+        'Reconciler(negRisk): redeemPositions tx failed',
+      );
+      result.error = `neg-risk redeemPositions failed: ${String(err)}`;
+      return { succeeded: false, payoutInDollars: 0 };
+    }
+
+    if (receipt.status !== 1) {
+      result.error = `neg-risk redeemPositions reverted (status ${receipt.status})`;
+      logger.error(
+        { positionId: result.positionId, txHash: receipt.transactionHash },
+        result.error,
+      );
+      return { succeeded: false, payoutInDollars: 0 };
+    }
+
+    let postBalance: ethers.BigNumber;
+    try {
+      postBalance = await collateral.balanceOf(walletAddress);
+    } catch (err) {
+      result.error = `neg-risk post-balance read failed: ${String(err)}`;
+      logger.error({ positionId: result.positionId, err: String(err) }, result.error);
+      return { succeeded: false, payoutInDollars: 0 };
+    }
+
+    // Confirm payout from the on-chain balance delta — robust regardless of
+    // which events the adapter vs. the underlying CTF emit.
+    const payoutRaw = postBalance.sub(preBalance);
+    const payoutInDollars = Number(ethers.utils.formatUnits(payoutRaw, 6));
+
+    if (payoutInDollars <= 0) {
+      result.error =
+        'neg-risk redemption settled 0 USDC.e — wrong outcomeIndex or already redeemed';
+      logger.error(
+        {
+          positionId: result.positionId,
+          conditionId: pos.conditionId,
+          txHash: receipt.transactionHash,
+          preBalance: preBalance.toString(),
+          postBalance: postBalance.toString(),
+        },
+        result.error,
+      );
+      return { succeeded: false, payoutInDollars: 0 };
+    }
+
+    // Mutate DB + wallet only after confirmed payout > 0.
+    const realizedPnl = payoutInDollars - pos.totalCost;
+    this.wallet.updateBalance(payoutInDollars);
+    db.closePosition(this.walletId, pos.marketId, pos.outcome, realizedPnl);
+
+    result.payoutAmount = payoutInDollars;
+    result.realizedPnl = realizedPnl;
+
+    logger.info(
+      { positionId: result.positionId, conditionId: pos.conditionId, payoutInDollars, realizedPnl },
+      'Reconciler(negRisk): redeemed and closed',
+    );
     return { succeeded: true, payoutInDollars };
   }
 

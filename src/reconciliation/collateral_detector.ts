@@ -3,6 +3,17 @@ import { ethers } from 'ethers';
 // Gnosis ConditionalTokens contract — same address for all Polymarket standard markets on Polygon
 export const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
 
+// NegRiskAdapter — multi-outcome (neg-risk) settlement. Forwards to the CTF
+// and unwraps WrappedCollateral back to USDC.e on redemption.
+export const NEG_RISK_ADAPTER_ADDRESS = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
+
+// USDC.e — the collateral neg-risk redemptions always pay out in.
+export const USDCE_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
+export const NEG_RISK_ADAPTER_ABI = [
+  'function redeemPositions(bytes32 _conditionId, uint256[] _amounts)',
+];
+
 const CTF_ABI = [
   'function payoutDenominator(bytes32) view returns (uint256)',
   'function payoutNumerators(bytes32, uint256) view returns (uint256)',
